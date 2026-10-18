@@ -1636,11 +1636,6 @@ def test_an_email_saved_as_txt_has_no_speaker_called_subject():
     assert [speaker for speaker, _ in parse_txt(email)] == ["#", "#", "#", "#", "Alice Smith"]
 
 
-def test_header_keyword_match_is_on_the_whole_prefix_only():
-    # "Action Items" is two words, so it is not the keyword "Action".
-    assert parse_txt("Action Items: x\n") == [("Action Items", "x")]
-
-
 # ---- inspect-metadata wording and exit-4 on a failed rollback
 
 
@@ -1674,3 +1669,154 @@ def test_cli_a_failed_rollback_exits_4_not_with_a_traceback(repo, incoming, monk
     assert cli.main(cli_args(original)) == int(ExitCode.ENVIRONMENT)
     err = capsys.readouterr().err
     assert "partial bundle" in err and "by hand" in err
+
+
+# ======================================================== fix round 3: the corpus
+#
+# ONE table of every speaker-label shape and what it must become. The `Name:`
+# predicate is orthographic guesswork, so each edit to it has a blast radius
+# that is invisible from the diff; three rounds in a row repaired one class of
+# input and broke another. Run this table before and after touching
+# merit/ingest/txt.py, and read the trade-off notes (marked TRADE-OFF) before
+# "fixing" a row: those rows are deliberate.
+#
+# "Stricter" is not "safer" here. A wrongly REJECTED label turns a real
+# utterance into a '#' line, which V5 refuses to cite; a wrongly ACCEPTED one
+# invents a speaker. Both directions are listed.
+#
+# Each row: (label, attributed, note). The line under test is "<label>: hi".
+# Non-ASCII labels are built with uni() so this file stays pure ASCII.
+
+CJK_ONE = uni(0x5C71, 0x7530)
+CJK_TWO = uni(0x5C71, 0x7530) + " " + uni(0x592A, 0x90CE)
+KANA = uni(0x3055, 0x304F, 0x3089)
+HANGUL = uni(0xD55C, 0xAD6D)
+ARABIC = uni(0x0645, 0x062D, 0x0645, 0x062F)
+HEBREW = uni(0x05D3, 0x05D5, 0x05D3)
+THAI = uni(0x0E2A, 0x0E21, 0x0E0A, 0x0E32, 0x0E22)  # contains a vowel mark
+DEVANAGARI = uni(0x0930, 0x093E, 0x092E)  # contains a combining vowel sign
+JOSE_NFD = "Jose" + uni(0x0301) + " Garcia"  # e + combining acute accent
+
+LABEL_CORPUS = [
+    # --- plain names: attributed
+    ("Jordan Reyes", True, "ordinary two-word name"),
+    ("Sam", True, "single capitalised word"),
+    ("Q", True, "single capital letter: a legitimate interviewer shorthand"),
+    ("Dr. Ada Lovelace", True, "title with a period"),
+    ("Mary-Jane O'Neil", True, "hyphen and apostrophe"),
+    ("J. R. R. Tolkien", True, "initials; exactly the four-word limit"),
+    ("A B C D", True, "four words is the limit"),
+    ("Anne van der Berg", True, "four words with two particles"),
+    # --- diarisation / tool labels: attributed (underscore regression, round 3)
+    ("SPEAKER_00", True, "pyannote and friends: must be citable"),
+    ("Speaker 1", True, "a later word may be all digits"),
+    ("Interviewer_1", True, "underscore then digit"),
+    ("Speaker_A", True, "underscore then letter"),
+    # --- lower-case particles after a capitalised first word
+    ("Ludwig van Beethoven", True, "particle"),
+    ("Jean-Luc de Vries", True, "particle after a hyphenated first name"),
+    ("Ahmad ibn Said", True, "particle"),
+    ("Maria della Rosa", True, "particle"),
+    ("Call de Vries", True, "TRADE-OFF: reads as an imperative but is shaped like a name; attributed"),
+    # --- scripts without case: attributed
+    (CJK_ONE, True, "CJK, one word"),
+    (CJK_TWO, True, "CJK, two words"),
+    (KANA, True, "kana"),
+    (HANGUL, True, "Hangul"),
+    (ARABIC, True, "Arabic"),
+    (HEBREW, True, "Hebrew"),
+    (THAI, True, "Thai with a vowel mark"),
+    (DEVANAGARI, True, "Devanagari with a combining vowel sign"),
+    (JOSE_NFD, True, "decomposed accent: a combining mark inside a Latin word"),
+    # --- document headers and minutes headings: never speakers
+    ("From", False, "email header"),
+    ("To", False, "email header"),
+    ("Cc", False, "email header"),
+    ("Subject", False, "email header"),
+    ("SUBJECT", False, "case-insensitive"),
+    ("Date", False, "email header"),
+    ("Re", False, "reply prefix"),
+    ("Fwd", False, "forward prefix"),
+    ("Action", False, "minutes heading"),
+    ("Actions", False, "plural"),
+    ("Action Items", False, "multi-word heading; whole-prefix match keeps it consistent with Action"),
+    ("Note", False, "TRADE-OFF: a real person named Note is demoted, visibly"),
+    ("Notes", False, "plural"),
+    ("Minutes", False, "minutes heading"),
+    ("TODO", False, "task marker"),
+    ("Resolved", False, "minutes heading"),
+    ("Decision", False, "minutes heading"),
+    ("Decisions", False, "plural"),
+    ("Next Steps", False, "two-word heading"),
+    ("See Also", False, "two-word heading"),
+    ("Attendees", False, "minutes heading"),
+    ("Action Plan", True, "not a listed heading, so it is a two-word capitalised label"),
+    # --- adversarial sentences: never speakers
+    ("Remember to call Bob", False, "four words but 'to' and 'call' are not capitalised"),
+    ("note to self", False, "lower-case first word"),
+    ("ops lead", False, "a role in lower case"),
+    ("See also de Vries", False, "'also' is neither capitalised nor a particle"),
+    ("lowercase name", False, "lower-case first word"),
+    ("five Capital Words In A Label", False, "more than four words"),
+    ("Action Item Owner Review Notes", False, "more than four words"),
+    # --- rejected but plausible: all demoted to structural, visibly
+    ("bell hooks", False, "TRADE-OFF: genuinely ambiguous lower-case Latin; demoted"),
+    ("van Beethoven", False, "TRADE-OFF: a particle never starts a label"),
+    ("de", False, "a lone particle"),
+]
+
+
+@pytest.mark.parametrize(
+    "label, attributed, note",
+    LABEL_CORPUS,
+    ids=[f"{'yes' if attributed else 'no'}-{note[:40]}" for _, attributed, note in LABEL_CORPUS],
+)
+def test_label_shape_corpus(label, attributed, note):
+    line = f"{label}: hi"
+    expected = [(label, "hi")] if attributed else [("#", line)]
+    assert parse_txt(line + "\n") == expected, note
+
+
+# Whole lines that are not labels at all.
+NON_LABEL_LINES = [
+    ("Meeting at 10:30: kickoff", "a colon inside a time is not a label separator"),
+    ("http://x.com/page", "a URL"),
+    ("see http://x.com: later", "a URL inside a sentence"),
+]
+
+
+@pytest.mark.parametrize("line, note", NON_LABEL_LINES, ids=[n for _, n in NON_LABEL_LINES])
+def test_non_label_lines_stay_structural(line, note):
+    assert parse_txt(line + "\n") == [("#", line)], note
+
+
+# The full-width colon (U+FF1A) used in native CJK and Arabic-script prose.
+# It needs no following space, and it is not part of a name word.
+FULLWIDTH = chr(0xFF1A)
+
+
+@pytest.mark.parametrize(
+    "label, text",
+    [
+        (CJK_ONE, uni(0x3053, 0x3093, 0x306B, 0x3061, 0x306F)),
+        (CJK_TWO, uni(0x3053, 0x3093, 0x306B, 0x3061, 0x306F)),
+        (ARABIC, uni(0x0645, 0x0631, 0x062D, 0x0628, 0x0627)),
+        ("Sam Ellis", "no space after a full-width colon"),
+        ("Sam Ellis", ""),
+    ],
+    ids=["cjk", "cjk-two-words", "arabic", "latin", "empty-text"],
+)
+def test_a_full_width_colon_separates_label_and_text_without_a_space(label, text):
+    assert parse_txt(f"{label}{FULLWIDTH}{text}\n") == [(label, text)]
+
+
+def test_a_full_width_colon_does_not_attribute_a_non_name_prefix():
+    line = f"note to self{FULLWIDTH}buy milk"
+    assert parse_txt(line + "\n") == [("#", line)]
+    line = f"Subject{FULLWIDTH}offsite"
+    assert parse_txt(line + "\n") == [("#", line)]
+
+
+def test_underscore_diarisation_labels_survive_a_whole_transcript():
+    text = "SPEAKER_00: first\nSPEAKER_01: second\nSPEAKER_00: third\n"
+    assert parse_txt(text) == [("SPEAKER_00", "first"), ("SPEAKER_01", "second"), ("SPEAKER_00", "third")]

@@ -19,7 +19,14 @@ five or more words, or a real person named like a header keyword ("Note")
 is demoted to structural. That is visible (the line still shows up in
 ``merit citations``) and is the safe direction. In an uncased script the
 capital-letter evidence is absent, so any short prefix of that script before a
-colon is attributed; the colon must be an ASCII ': '.
+colon is attributed. The colon is an ASCII ': ' (or end of line) or a
+full-width colon, which needs no following space.
+
+Predicate edits are risky: it is orthographic guesswork, and "stricter" is not
+"safer" when its job is to permit legitimate attribution, because every needless
+rejection makes a real utterance uncitable. tests/test_ingest.py holds a
+label-shape corpus with the expected outcome of every shape; run it, and read
+its trade-off comments, before changing anything here.
 """
 
 from __future__ import annotations
@@ -29,8 +36,15 @@ import unicodedata
 
 from merit.ingest.canonical import STRUCTURAL_SPEAKER
 
-# Words are split on single spaces; a word contains no colon or whitespace.
-_SPEAKER = re.compile(r"(?P<name>[^\s:]+(?: [^\s:]+){0,3}):(?: (?P<text>.*))?")
+# U+FF1A, written with chr() to keep this file pure ASCII.
+_FULLWIDTH_COLON = chr(0xFF1A)
+# Words are split on single spaces; a word contains no colon (either kind) or
+# whitespace. After an ASCII colon a space or the end of the line is required;
+# a full-width colon needs neither.
+_SPEAKER = re.compile(
+    rf"(?P<name>[^\s:{_FULLWIDTH_COLON}]+(?: [^\s:{_FULLWIDTH_COLON}]+){{0,3}})"
+    rf"(?:{_FULLWIDTH_COLON}|:(?: |$))(?P<text>.*)"
+)
 
 # Document-header and minutes keywords. Matched case-insensitively against the
 # whole prefix. A real person named "Note" is demoted to structural by this,
@@ -39,6 +53,10 @@ _HEADER_KEYWORDS = frozenset(
     {
         "from", "to", "cc", "bcc", "subject", "date", "sent", "re", "fwd",
         "note", "action", "decision", "agenda", "attendees", "present", "apologies",
+        # Plural and minutes-style headings. Whole-prefix match, so "Action Items"
+        # is stopped consistently with "Action".
+        "notes", "minutes", "todo", "resolved", "decisions", "actions",
+        "see also", "next steps", "action items",
     }
 )
 # Lower-case particles that may appear inside a name. "al" and "de" are only
@@ -47,7 +65,8 @@ _PARTICLES = frozenset(
     {"van", "von", "der", "de", "del", "della", "da", "di", "du", "la", "le", "bin", "ibn", "al", "ter", "ten"}
 )
 # Characters other than letters, digits and combining marks a name word may hold.
-_WORD_PUNCTUATION = frozenset(".'-" + chr(0x2019))
+# The underscore is needed for diarisation labels such as SPEAKER_00.
+_WORD_PUNCTUATION = frozenset(".'-_" + chr(0x2019))
 
 
 def _starts_like_a_name(word: str) -> bool:
@@ -81,7 +100,7 @@ def split_speaker(line: str) -> tuple[str, str]:
     match = _SPEAKER.fullmatch(line)
     if match is None or not _is_name(match.group("name")):
         return STRUCTURAL_SPEAKER, line
-    return match.group("name"), (match.group("text") or "").strip()
+    return match.group("name"), match.group("text").strip()
 
 
 def parse_txt(text: str) -> list[tuple[str, str]]:
