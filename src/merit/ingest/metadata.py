@@ -9,6 +9,7 @@ before anything is written.
 from __future__ import annotations
 
 from pathlib import Path
+from subprocess import list2cmdline
 
 from merit.ingest.docx import read_xml_part
 
@@ -31,7 +32,9 @@ def inspect_metadata(path: Path) -> dict[str, str | None]:
     path = Path(path)
     if path.suffix.lower() != ".docx":
         return {}
-    root = read_xml_part(path.read_bytes(), _CORE_PART)
+    rerun = f"merit ingest --inspect-metadata {list2cmdline([str(path)])}"
+    fix = f"re-save the document as .docx from Word, then re-run `{rerun}`"
+    root = read_xml_part(path.read_bytes(), _CORE_PART, fix=fix)
     report: dict[str, str | None] = {}
     for key, tag in _CORE_FIELDS.items():
         element = root.find(tag) if root is not None else None

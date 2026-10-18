@@ -25,14 +25,14 @@ _LINE_BREAKS = re.compile(r"[ \t]*[\r\n]+[ \t]*")
 MAX_PART_BYTES = 64 * 1024 * 1024
 
 
-def _fail(why: str) -> ValidationFailed:
-    return ValidationFailed(
-        f"not a usable docx file: {why}",
-        fix="re-save the document as .docx from Word, or export it as .txt and re-run `merit ingest`",
-    )
+_INGEST_FIX = "re-save the document as .docx from Word, or export it as .txt and re-run `merit ingest`"
 
 
-def read_part(data: bytes, name: str) -> bytes | None:
+def _fail(why: str, fix: str | None = None) -> ValidationFailed:
+    return ValidationFailed(f"not a usable docx file: {why}", fix=fix or _INGEST_FIX)
+
+
+def read_part(data: bytes, name: str, *, fix: str | None = None) -> bytes | None:
     """Return one part of a docx zip, or None if the archive has no such part.
 
     The size is bounded twice: by the declared size, and by reading at most
@@ -46,13 +46,13 @@ def read_part(data: bytes, name: str) -> bytes | None:
             except KeyError:
                 return None
             if info.file_size > MAX_PART_BYTES:
-                raise _fail(f"{name} is larger than {MAX_PART_BYTES} bytes")
+                raise _fail(f"{name} is larger than {MAX_PART_BYTES} bytes", fix)
             with archive.open(info) as part:
                 content = part.read(MAX_PART_BYTES + 1)
     except zipfile.BadZipFile as exc:
-        raise _fail("it is not a zip archive") from exc
+        raise _fail("it is not a zip archive", fix) from exc
     if len(content) > MAX_PART_BYTES:
-        raise _fail(f"{name} is larger than {MAX_PART_BYTES} bytes")
+        raise _fail(f"{name} is larger than {MAX_PART_BYTES} bytes", fix)
     return content
 
 
@@ -64,7 +64,7 @@ def _refuse_declaration(*_ignored: object) -> None:
     raise _Forbidden
 
 
-def read_xml_part(data: bytes, name: str) -> ET.Element | None:
+def read_xml_part(data: bytes, name: str, *, fix: str | None = None) -> ET.Element | None:
     """Parse one XML part of a docx, or None if the archive has no such part.
 
     A first pass with expat refuses any DOCTYPE or entity declaration. expat
@@ -72,7 +72,7 @@ def read_xml_part(data: bytes, name: str) -> ET.Element | None:
     way it would past a byte search for ``<!DOCTYPE``. Only a part with no
     declarations reaches ``ElementTree``, which then has nothing to expand.
     """
-    content = read_part(data, name)
+    content = read_part(data, name, fix=fix)
     if content is None:
         return None
     guard = expat.ParserCreate()
@@ -82,9 +82,9 @@ def read_xml_part(data: bytes, name: str) -> ET.Element | None:
         guard.Parse(content, True)
         return ET.fromstring(content)
     except _Forbidden:
-        raise _fail(f"{name} declares a DOCTYPE or entity, which Word never writes") from None
+        raise _fail(f"{name} declares a DOCTYPE or entity, which Word never writes", fix) from None
     except (expat.ExpatError, ET.ParseError) as exc:
-        raise _fail(f"{name} is not well-formed XML ({exc})") from exc
+        raise _fail(f"{name} is not well-formed XML ({exc})", fix) from exc
 
 
 def _descendants(element: ET.Element, *, stop_at_paragraph: bool):

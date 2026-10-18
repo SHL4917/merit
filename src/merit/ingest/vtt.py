@@ -21,8 +21,10 @@ _HEADER = re.compile(r"WEBVTT(?:[ \t]|$)")
 # A NOTE/STYLE/REGION block starts with the keyword as a whole word; an
 # identifier like NOTEBOOK-1 is an ordinary cue.
 _SKIPPED_BLOCK = re.compile(r"(?:NOTE|STYLE|REGION)(?:[ \t]|$)")
-# Either <v Name> (optionally with classes, <v.loud Name>) or the closing </v>.
-_VOICE_TOKEN = re.compile(r"<v(?:\.[^\s>]*)*[ \t]+([^>]*)>|</v>")
+# <v Name> (optionally with classes, <v.loud Name>), a bare <v> with no name, or
+# the closing </v>. A bare <v> is a voice token too: stripping it as an ordinary
+# tag would silently widen the previous speaker's span.
+_VOICE_TOKEN = re.compile(r"<v(?:\.[^\s>]*)*(?:[ \t]+([^>]*))?>|</v>")
 _TAG = re.compile(r"<[^>]*>")
 
 
@@ -51,7 +53,7 @@ def _cue_utterances(payload: str) -> list[tuple[str, str]]:
     for token in _VOICE_TOKEN.finditer(payload):
         emit(payload[position : token.start()])
         position = token.end()
-        # group(1) is None for </v>; an empty name is also unattributed.
+        # group(1) is None for </v> and a bare <v>; an empty name is unattributed.
         name = html.unescape(token.group(1) or "").strip()
         speaker = name or STRUCTURAL_SPEAKER
     emit(payload[position:])
@@ -65,7 +67,8 @@ def parse_vtt(text: str) -> list[tuple[str, str]]:
     stretch of text between voice tokens.
     """
     blocks = _BLOCK_BREAK.split(text.strip("\n"))
-    if not _HEADER.match(blocks[0]):
+    # Only the first LINE is the header; "Kind: captions" lines may follow it.
+    if not _HEADER.match(blocks[0].split("\n")[0]):
         raise _fail("it does not begin with a WEBVTT header")
     utterances: list[tuple[str, str]] = []
     for block in blocks[1:]:

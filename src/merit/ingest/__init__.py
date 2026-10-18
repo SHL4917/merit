@@ -41,7 +41,7 @@ import yaml
 
 import merit
 from merit.config import Config, load_config
-from merit.errors import UsageError, ValidationFailed
+from merit.errors import EnvironmentError_, UsageError, ValidationFailed
 from merit.ingest.bundle import IMMUTABLE_META_FIELDS, bundle_sha256
 from merit.ingest.canonical import (
     CanonicalLine,
@@ -336,9 +336,10 @@ def _place(staged: Sequence[tuple[Path, Path]]) -> None:
         leftover = _rollback(created_files, created_dirs)
         if leftover and isinstance(failure, Exception):
             names = ", ".join(str(p) for p in leftover)
-            raise OSError(
-                f"{failure}. Rollback could not remove what this run created, so a partial "
-                f"bundle remains; delete these by hand before retrying: {names}"
+            raise EnvironmentError_(
+                f"ingest failed ({failure}) and rollback could not remove what this run created, "
+                f"so a partial bundle remains: {names}",
+                fix=f"delete {names} by hand, then re-run the same `merit ingest` command",
             ) from failure
         raise
 

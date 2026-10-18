@@ -12,7 +12,7 @@ import yaml
 import merit
 import merit.ingest as ingest_package
 from merit import cli
-from merit.errors import ExitCode, UsageError, ValidationFailed
+from merit.errors import EnvironmentError_, ExitCode, UsageError, ValidationFailed
 from merit.ingest import RECORD_TYPES, IngestResult, ingest
 from merit.ingest.bundle import IMMUTABLE_META_FIELDS, bundle_sha256
 from merit.ingest.canonical import parse_canonical, sha256_bytes, sha256_text
@@ -871,14 +871,14 @@ def test_cli_ingest_outside_a_repo_is_an_environment_error(incoming, tmp_path, m
 
 ALLOWED_IMPORTS = {
     "datetime", "hashlib", "html", "io", "json", "re", "tempfile", "zipfile", "yaml",
-    "merit", "xml.etree.ElementTree",
+    "merit", "unicodedata", "xml.etree.ElementTree",
 }
 ALLOWED_FROM = {
     "__future__": {"annotations"},
     "collections.abc": {"Mapping", "Sequence"},
     "dataclasses": {"dataclass"},
     "merit.config": {"Config", "load_config"},
-    "merit.errors": {"UsageError", "ValidationFailed"},
+    "merit.errors": {"EnvironmentError_", "UsageError", "ValidationFailed"},
     "merit.ingest.bundle": {"IMMUTABLE_META_FIELDS", "bundle_sha256"},
     "merit.ingest.canonical": {
         "CanonicalLine", "STRUCTURAL_SPEAKER", "normalise_text", "parse_canonical",
@@ -899,6 +899,7 @@ MUTATING_NAMES = {
     "symlink", "utime", "chmod", "chown", "touch", "mkdir", "makedirs",
     "writestr", "write", "writelines", "extractall", "extract",
     "execv", "execve", "execl", "execvp", "spawnv", "startfile",
+    "FileIO", "lchmod", "link_to",
     "call", "check_call", "check_output", "run", "Popen", "system", "popen",
 }
 # Dynamic ways to reach any of the above without naming it, or to leave Python.
@@ -909,15 +910,19 @@ BANNED_BARE_NAMES = {
     "os", "shutil", "subprocess", "builtins", "importlib", "ctypes", "functools", "operator",
 }
 READ_ONLY_OPEN_MODES = {"r", "rb"}
-# The only places allowed to touch the filesystem destructively, and how.
+# The only places allowed to touch the filesystem destructively, and how. Keyed
+# by (module file, function): a function of the same name in another file
+# earns nothing.
+INIT = "__init__.py"
 ALLOWED_MUTATIONS = {
-    "_stage": {"write_bytes"},  # writes inside the temporary staging directory
-    "_ensure_dir": {"mkdir"},  # creates a missing directory under sources/
-    "_create_exclusive": {"write"},  # open(path, "xb"): fails if the file exists
-    "_rollback": {"unlink", "rmdir"},  # removes only what this very run created
+    (INIT, "_stage"): {"write_bytes"},  # writes inside the temporary staging directory
+    (INIT, "_ensure_dir"): {"mkdir"},  # creates a missing directory under sources/
+    (INIT, "_create_exclusive"): {"write"},  # open(path, "xb"): fails if the file exists
+    (INIT, "_rollback"): {"unlink", "rmdir"},  # removes only what this very run created
 }
+EXCLUSIVE_CREATE_SCOPE = (INIT, "_create_exclusive")
 # ZipFile.open(member) reads a zip member; it has no write mode.
-ZIP_MEMBER_OPEN_SCOPES = {"read_part"}
+ZIP_MEMBER_OPEN_SCOPES = {("docx.py", "read_part")}
 
 
 def _argument(node: ast.Call, position: int):
@@ -930,10 +935,21 @@ def _argument(node: ast.Call, position: int):
     return None
 
 
+def _is_str_replace(attribute: ast.Attribute, call_of: dict) -> bool:
+    call = call_of.get(id(attribute))
+    return (
+        call is not None
+        and len(call.args) >= 2
+        and isinstance(call.args[0], ast.Constant)
+        and isinstance(call.args[0].value, (str, bytes))
+    )
+
+
 def mutation_violations(source: str, filename: str = "<module>", *, check_imports: bool = True) -> list[str]:
     tree = ast.parse(source, filename)
     found: list[str] = []
     callees = {id(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)}
+    call_of = {id(n.func): n for n in ast.walk(tree) if isinstance(n, ast.Call)}
 
     def visit(node: ast.AST, scope: str) -> None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -958,14 +974,14 @@ def mutation_violations(source: str, filename: str = "<module>", *, check_import
                 mode = _argument(node, 1)
                 literal = mode.value if isinstance(mode, ast.Constant) else None
                 if literal == "xb":
-                    if scope != "_create_exclusive":
-                        found.append(f"{where} creates a file outside _create_exclusive")
+                    if (filename, scope) != EXCLUSIVE_CREATE_SCOPE:
+                        found.append(f"{where} creates a file outside {EXCLUSIVE_CREATE_SCOPE}")
                 elif mode is not None and literal not in READ_ONLY_OPEN_MODES:
                     found.append(f"{where} opens with mode {literal!r}")
             if isinstance(func, ast.Attribute) and func.attr == "open":
                 mode = _argument(node, 0)
                 literal = mode.value if isinstance(mode, ast.Constant) else None
-                zip_member = scope in ZIP_MEMBER_OPEN_SCOPES and len(node.args) == 1 and not node.keywords
+                zip_member = (filename, scope) in ZIP_MEMBER_OPEN_SCOPES and len(node.args) == 1 and not node.keywords
                 read_only = literal in READ_ONLY_OPEN_MODES and len(node.args) + len(node.keywords) == 1
                 if not (zip_member or read_only):
                     found.append(f"{where} calls .open() other than a read-only open")
@@ -977,14 +993,14 @@ def mutation_violations(source: str, filename: str = "<module>", *, check_import
                     found.append(f"{where} opens a zip for writing")
 
         if isinstance(node, ast.Attribute):
-            if node.attr in MUTATING_NAMES and node.attr not in ALLOWED_MUTATIONS.get(scope, set()):
+            if node.attr in MUTATING_NAMES and node.attr not in ALLOWED_MUTATIONS.get((filename, scope), set()):
                 found.append(f"{where} uses .{node.attr}")
-            if node.attr == "replace":
-                # str.replace(old, new) is everywhere; Path.replace(target), a bare
-                # reference such as map(p.replace, xs), and os.replace are not.
-                call_with_two = id(node) in callees and _arity.get(id(node), 0) >= 2
-                if not call_with_two:
-                    found.append(f"{where} uses .replace other than str.replace(old, new)")
+            if node.attr == "replace" and not _is_str_replace(node, call_of):
+                # str.replace("old", "new") is everywhere. Path.replace(target), an
+                # unbound Path.replace(a, b), a bare reference such as
+                # map(p.replace, xs) and os.replace are not: the first argument of
+                # a str.replace in this package is always a literal.
+                found.append(f"{where} uses .replace other than str.replace with a literal first argument")
             if node.attr == "open" and id(node) not in callees:
                 found.append(f"{where} references .open without calling it")
         if isinstance(node, ast.Name):
@@ -996,7 +1012,6 @@ def mutation_violations(source: str, filename: str = "<module>", *, check_import
         for child in ast.iter_child_nodes(node):
             visit(child, scope)
 
-    _arity = {id(n.func): len(n.args) + len(n.keywords) for n in ast.walk(tree) if isinstance(n, ast.Call)}
     visit(tree, "<module>")
     return found
 
@@ -1010,6 +1025,10 @@ BAD_CALL_SNIPPETS = [
     "def ingest():\n    shutil.rmtree('sources')",
     "def ingest():\n    os.replace('a', 'b')",
     "def ingest():\n    path.replace(target)",
+    "def ingest():\n    Path.replace(a, b)",  # unbound: renames a file with two arguments
+    "def ingest():\n    Path.lchmod(p, 0)",
+    "def ingest():\n    p.link_to(q)",
+    "def ingest():\n    io.FileIO('x', 'wb')",
     "def ingest():\n    os.remove('a')",
     "def ingest():\n    open('x', 'w')",
     "def ingest():\n    open('x', mode='a')",
@@ -1059,15 +1078,24 @@ BAD_IMPORT_SNIPPETS = [
     "from . import secret",
     "import builtins",
 ]
+# (module file, source): a good snippet must be clean in the file it claims to be.
 GOOD_SNIPPETS = [
-    "def _read():\n    return open('x', 'rb').read()\n",
-    "def _norm(t):\n    return t.replace('a', 'b')\n",
-    "def _read():\n    return p.open('r').read()\n",
-    "def _rollback(files):\n    for f in files:\n        f.unlink()\n",
-    "def _create_exclusive(p, d, c):\n    with open(p, 'xb') as f:\n        f.write(d)\n",
-    "def parse():\n    return zipfile.ZipFile(io.BytesIO(data))\n",
-    "def read_part():\n    with archive.open(info) as part:\n        return part.read(10)\n",
-    "from pathlib import Path\nimport re\n",
+    ("vtt.py", "def _read():\n    return open('x', 'rb').read()\n"),
+    ("vtt.py", "def _norm(t):\n    return t.replace('a', 'b')\n"),
+    ("vtt.py", "def _read():\n    return p.open('r').read()\n"),
+    ("__init__.py", "def _rollback(files):\n    for f in files:\n        f.unlink()\n"),
+    ("__init__.py", "def _create_exclusive(p, d, c):\n    with open(p, 'xb') as f:\n        f.write(d)\n"),
+    ("docx.py", "def parse():\n    return zipfile.ZipFile(io.BytesIO(data))\n"),
+    ("docx.py", "def read_part():\n    with archive.open(info) as part:\n        return part.read(10)\n"),
+    ("vtt.py", "from pathlib import Path\nimport re\n"),
+]
+# The exemption belongs to the function in the file that earned it, not to the name.
+BAD_WRONG_MODULE_SNIPPETS = [
+    ("vtt.py", "def _create_exclusive(p, d, c):\n    with open(p, 'xb') as f:\n        f.write(d)\n"),
+    ("docx.py", "def _rollback(files):\n    for f in files:\n        f.unlink()\n"),
+    ("metadata.py", "def _stage(s, n, d):\n    (s / n).write_bytes(d)\n"),
+    ("vtt.py", "def read_part():\n    return archive.open(info)\n"),
+    ("__init__.py", "def read_part():\n    return archive.open(info)\n"),
 ]
 
 
@@ -1078,8 +1106,10 @@ def test_the_d19_scanner_catches_every_way_to_modify_or_delete():
         assert mutation_violations(snippet, check_imports=False), snippet
     for snippet in BAD_IMPORT_SNIPPETS:
         assert mutation_violations(snippet), snippet
-    for snippet in GOOD_SNIPPETS:
-        assert mutation_violations(snippet) == [], snippet
+    for filename, snippet in GOOD_SNIPPETS:
+        assert mutation_violations(snippet, filename) == [], (filename, snippet)
+    for filename, snippet in BAD_WRONG_MODULE_SNIPPETS:
+        assert mutation_violations(snippet, filename), (filename, snippet)
 
 
 def test_the_ingest_package_has_no_modify_or_delete_path_outside_its_choke_points():
@@ -1093,9 +1123,11 @@ def test_the_ingest_package_has_no_modify_or_delete_path_outside_its_choke_point
 
 
 def test_the_allow_list_names_real_functions_so_it_cannot_rot_into_a_no_op():
-    source = (Path(ingest_package.__file__).parent / "__init__.py").read_text(encoding="utf-8")
-    defined = {n.name for n in ast.walk(ast.parse(source)) if isinstance(n, ast.FunctionDef)}
-    assert set(ALLOWED_MUTATIONS) <= defined
+    folder = Path(ingest_package.__file__).parent
+    for module, function in [*ALLOWED_MUTATIONS, *ZIP_MEMBER_OPEN_SCOPES]:
+        tree = ast.parse((folder / module).read_text(encoding="utf-8"))
+        defined = {n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+        assert function in defined, (module, function)
 
 
 def test_no_ingest_path_modifies_or_deletes_an_existing_source(repo, incoming, tmp_path):
@@ -1460,12 +1492,14 @@ def test_a_failed_rollback_says_which_files_it_could_not_remove(repo, incoming, 
         raise PermissionError("locked")
 
     monkeypatch.setattr(Path, "unlink", stuck)
-    with pytest.raises(OSError) as exc:
+    with pytest.raises(EnvironmentError_) as exc:
         ingest(repo, original, **KWARGS)
     message = str(exc.value)
     assert "injected" in message  # the original failure is still there
     assert "interview.vtt" in message and "2026-09-12-interview.md" in message
-    assert "by hand" in message
+    assert "by hand" in exc.value.fix
+    # A MeritError, so the CLI reports exit 4 instead of a traceback or a bare exit 1.
+    assert exc.value.exit_code == ExitCode.ENVIRONMENT
 
 
 def test_collision_wording_does_not_claim_different_content_for_a_stray_identical_file(repo, incoming):
@@ -1496,3 +1530,147 @@ def test_cli_fix_commands_quote_an_origin_path_with_spaces(repo, tmp_path, monke
     assert '"' + str(original) + '"' in capsys.readouterr().err
     assert cli.main(cli_args(original, "--participant", "no-role")) == int(ExitCode.USAGE)
     assert '"' + str(original) + '"' in capsys.readouterr().err
+
+
+# ================================================== fix round 2: new tests
+
+
+def uni(*codepoints: int) -> str:
+    """Build a non-ASCII string from code points, keeping this file pure ASCII."""
+    return "".join(chr(c) for c in codepoints)
+
+
+# ---- VTT header: only the first line is the header
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        "WEBVTT\nKind: captions\nLanguage: en",  # the standard YouTube export
+        "WEBVTT - My title\nKind: captions",
+        "WEBVTT\nX-TIMESTAMP-MAP=LOCAL:00:00:00.000,MPEGTS:900000",
+    ],
+)
+def test_vtt_header_block_may_carry_metadata_lines(header):
+    text = header + "\n\n00:00:01.000 --> 00:00:02.000\n<v A>x</v>\n"
+    assert parse_vtt(text) == [("A", "x")]
+
+
+def test_vtt_a_bare_voice_tag_inside_an_open_span_does_not_widen_the_speaker():
+    text = "WEBVTT\n\n00:00:01.000 --> 00:00:04.000\n<v A>hi <v>bar\n"
+    assert parse_vtt(text) == [("A", "hi"), ("#", "bar")]
+
+
+def test_vtt_a_bare_voice_tag_with_classes_is_also_unattributed():
+    text = "WEBVTT\n\n00:00:01.000 --> 00:00:04.000\n<v A>hi</v> <v.loud>bar</v>\n"
+    assert parse_vtt(text) == [("A", "hi"), ("#", "bar")]
+
+
+# ---- TXT: scripts without case, name particles, header keywords
+
+
+@pytest.mark.parametrize(
+    "label",
+    [
+        uni(0x5C71, 0x7530),  # CJK
+        uni(0x5C71, 0x7530) + " " + uni(0x592A, 0x90CE),  # two CJK words
+        uni(0x0645, 0x062D, 0x0645, 0x062F),  # Arabic
+        uni(0x05D3, 0x05D5, 0x05D3),  # Hebrew
+        uni(0x0E2A, 0x0E21, 0x0E0A, 0x0E32, 0x0E22),  # Thai, with a vowel mark
+        uni(0x0930, 0x093E, 0x092E),  # Devanagari, with a combining vowel sign
+        "Jose" + uni(0x0301) + " Garcia",  # decomposed accent (a combining mark)
+    ],
+    ids=["cjk", "cjk-two-words", "arabic", "hebrew", "thai", "devanagari", "decomposed-accent"],
+)
+def test_txt_labels_in_uncased_scripts_and_with_combining_marks_are_attributed(label):
+    assert parse_txt(f"{label}: hello\n") == [(label, "hello")]
+
+
+def test_a_transcript_in_an_uncased_script_is_not_all_structural():
+    arabic = uni(0x0645, 0x062D, 0x0645, 0x062F)
+    hebrew = uni(0x05D3, 0x05D5, 0x05D3)
+    utterances = parse_txt(f"{arabic}: one\n{hebrew}: two\n")
+    assert [speaker for speaker, _ in utterances] == [arabic, hebrew]
+
+
+@pytest.mark.parametrize(
+    "line, speaker",
+    [
+        ("Ludwig van Beethoven: yes", "Ludwig van Beethoven"),
+        ("Jean-Luc de Vries: yes", "Jean-Luc de Vries"),
+        ("Ahmad ibn Said: yes", "Ahmad ibn Said"),
+        ("Maria della Rosa: yes", "Maria della Rosa"),
+    ],
+)
+def test_txt_lowercase_name_particles_are_allowed_after_the_first_word(line, speaker):
+    assert parse_txt(line + "\n") == [(speaker, line.split(": ")[1])]
+
+
+@pytest.mark.parametrize("line", ["bell hooks: yes", "van Beethoven: yes", "de: yes"])
+def test_txt_a_lowercase_first_word_is_never_a_name_even_if_it_is_a_particle(line):
+    assert parse_txt(line + "\n") == [("#", line)]
+
+
+@pytest.mark.parametrize(
+    "keyword",
+    [
+        "From", "To", "Cc", "Bcc", "Subject", "Date", "Sent", "Re", "Fwd", "Note",
+        "Action", "Decision", "Agenda", "Attendees", "Present", "Apologies",
+        "SUBJECT", "subject", "fRoM",
+    ],
+)
+def test_txt_document_header_keywords_are_not_speakers(keyword):
+    line = f"{keyword}: something"
+    assert parse_txt(line + "\n") == [("#", line)]
+
+
+def test_an_email_saved_as_txt_has_no_speaker_called_subject():
+    email = (
+        "From: alice@example.test\n"
+        "To: bob@example.test\n"
+        "Subject: Offsite\n"
+        "Date: 12 Sep 2026\n"
+        "\n"
+        "Alice Smith: We should book the venue.\n"
+    )
+    assert [speaker for speaker, _ in parse_txt(email)] == ["#", "#", "#", "#", "Alice Smith"]
+
+
+def test_header_keyword_match_is_on_the_whole_prefix_only():
+    # "Action Items" is two words, so it is not the keyword "Action".
+    assert parse_txt("Action Items: x\n") == [("Action Items", "x")]
+
+
+# ---- inspect-metadata wording and exit-4 on a failed rollback
+
+
+def test_a_bad_core_properties_error_tells_the_user_to_re_run_inspect_metadata(incoming):
+    path = incoming / "my minutes.docx"
+    path.write_bytes(b"not a zip")
+    with pytest.raises(ValidationFailed) as exc:
+        inspect_metadata(path)
+    assert "--inspect-metadata" in exc.value.fix
+    assert '"' + str(path) + '"' in exc.value.fix  # quoted: the path has a space
+    assert ".txt" not in exc.value.fix
+
+
+def test_ingest_of_a_bad_docx_still_suggests_exporting_as_txt(repo, incoming):
+    bad = incoming / "bad.docx"
+    bad.write_bytes(b"not a zip")
+    with pytest.raises(ValidationFailed) as exc:
+        ingest(repo, bad, **KWARGS)
+    assert ".txt" in exc.value.fix and "merit ingest" in exc.value.fix
+
+
+def test_cli_a_failed_rollback_exits_4_not_with_a_traceback(repo, incoming, monkeypatch, capsys):
+    monkeypatch.chdir(repo)
+    original = write_vtt(incoming)
+    _fail_on_call(monkeypatch, 3)
+
+    def stuck(self, *args, **kwargs):
+        raise PermissionError("locked")
+
+    monkeypatch.setattr(Path, "unlink", stuck)
+    assert cli.main(cli_args(original)) == int(ExitCode.ENVIRONMENT)
+    err = capsys.readouterr().err
+    assert "partial bundle" in err and "by hand" in err
