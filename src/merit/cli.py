@@ -127,6 +127,21 @@ def _anchor_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("file", help="governed artefact YAML file")
 
 
+def _apply(args: argparse.Namespace) -> None:
+    """Apply an ungoverned proposal transactionally after complete validation."""
+    from merit.apply import apply_proposal
+    proposal = Path(args.proposal).resolve()
+    result = apply_proposal(find_repo_root(proposal.parent), proposal)
+    for path in result.paths:
+        print(f"Applied: {path}")
+    for warning in result.warnings:
+        print(f"warning: {warning}")
+
+
+def _apply_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("proposal", help="proposal YAML file under proposals/")
+
+
 def _validate(args: argparse.Namespace) -> int:
     """Validate governed artefacts with deterministic numbered checks."""
     from merit.validate import runner
@@ -189,6 +204,7 @@ COMMANDS: dict[str, Command] = {
     "ingest": Command(_ingest, _ingest_arguments),
     "validate": Command(_validate, _validate_arguments),
     "anchor": Command(_anchor, _anchor_arguments),
+    "apply": Command(_apply, _apply_arguments),
 }
 
 

@@ -31,6 +31,8 @@ This is the tool repository. It holds no requirements data. Design: `docs/superp
 - Python `re` and ECMA-262 regex syntax differ: Python `$` admits a trailing newline and `\Z` is invalid under ECMA Unicode mode. Share the portable strict lookahead in `ID_PATTERNS`, never substitute either anchor.
 - V11 reads `supersessions/`, never mutable source metadata. Non-baselined citations are advisory; baselined citations are errors. `baseline_blockers` returns all errors, never advisories.
 - Raw validation order is V3, V1, V4 before the model gate; all remaining checks require safe models. Context/history reads use the real repository even when artefacts are staged.
+- Apply handlers write only to staging. ID allocation reads staging; rollback consumes no IDs. The transaction calls `run_checks(staging, context_root=real_repo)` so V2/V4 retain their historical boundary and configuration. Never replace that call with validation of a bare temporary repo.
+- `add_decision` records issue status `resolved` and `resolved_by`; derived status still reads `awaiting_confirmation` for a provisional decision. Supersession writes a new artefact and never changes a sidecar.
 - All file I/O is explicitly UTF-8 (`encoding="utf-8"`). Never create a symlink: the target is Windows. Use `pathlib`.
 
 ## Non-obvious placement
