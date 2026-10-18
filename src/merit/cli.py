@@ -22,12 +22,12 @@ def _init(args: argparse.Namespace) -> int | None:
     """Scaffold a new requirements repo."""
     if args.github:
         from merit.git_ops import init_github
-        if not args.workflow_repo or not args.wheel_url or not args.wheel_sha256:
-            raise UsageError("--github requires --workflow-repo, --wheel-url and --wheel-sha256.",
+        if not args.workflow_repo or not args.wheel_url:
+            raise UsageError("--github requires --workflow-repo and --wheel-url.",
                              fix="merit init --github --help")
         for finding in init_github(Path(args.target), project_id=args.project_id, id_prefix=args.id_prefix,
                                    workflow_repo=args.workflow_repo, wheel_url=args.wheel_url,
-                                   wheel_sha256=args.wheel_sha256, github_repo=args.github_repo):
+                                   github_repo=args.github_repo):
             print(finding)
     else:
         init(Path(args.target), project_id=args.project_id, id_prefix=args.id_prefix)
@@ -126,7 +126,6 @@ def _init_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--github-repo", help="new repository OWNER/REPO (default: authenticated user/project id)")
     parser.add_argument("--workflow-repo", help="trusted MERIT workflow OWNER/REPO; required with --github")
     parser.add_argument("--wheel-url", help="explicit HTTPS release wheel URL; required with --github")
-    parser.add_argument("--wheel-sha256", help="pinned release wheel SHA-256; required with --github")
 
 
 def _doctor_arguments(parser: argparse.ArgumentParser) -> None:

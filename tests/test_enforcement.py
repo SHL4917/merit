@@ -32,8 +32,9 @@ def github(monkeypatch):
     project = _template("workflow.yml").replace("__WORKFLOW_REPO__", WORKFLOW_REPO).replace("__SHA__", SHA)
     responses = {
         f"repos/{WORKFLOW_REPO}/commits/v0.1.0": {"sha": SHA},
-        f"repos/{WORKFLOW_REPO}/contents/{ops.WORKFLOW_PATH}?ref={SHA}": {
-            "type": "file", "path": ops.WORKFLOW_PATH},
+        f"repos/{WORKFLOW_REPO}/contents/{ops.WORKFLOW_PATH}?ref={SHA}": file_response(
+            ops.WORKFLOW_PATH, _template("validator-workflow.yml").replace("__TRUSTED_DIGEST__", DIGEST)),
+        "view": {"nameWithOwner": "acme/project", "defaultBranchRef": {"name": "main"}},
         f"repos/{WORKFLOW_REPO}": {"id": 11, "full_name": WORKFLOW_REPO},
         "repos/acme/project": {"id": 22, "full_name": "acme/project"},
         "user": {"login": "reviewer"},
@@ -55,7 +56,7 @@ def github(monkeypatch):
     def run(root, *args, input=None):
         calls.append((args, input))
         if args[:3] == ("gh", "repo", "view"):
-            return json.dumps({"nameWithOwner": "acme/project", "defaultBranchRef": {"name": "main"}})
+            return json.dumps(responses["view"])
         if args[:2] == ("gh", "api"):
             endpoint = args[2]
             if "--method" in args:
@@ -216,11 +217,50 @@ def test_some_ruleset_targeting_main_does_not_imply_t1(github, tmp_path):
     assert tier(github, tmp_path) == "T2"
 
 
-@pytest.mark.parametrize("endpoint", ["repos/acme/project/branches/main/protection", "repos/acme/project/rules/branches/main", f"repos/{WORKFLOW_REPO}/commits/v0.1.0"])
+@pytest.mark.parametrize("endpoint", ["repos/acme/project/rules/branches/main", f"repos/{WORKFLOW_REPO}/commits/v0.1.0"])
 def test_unreadable_settings_are_unverified(github, tmp_path, endpoint):
     t1(github)
     github[0][endpoint] = EnvironmentError_("HTTP 403 denied", fix="gh auth status")
     assert tier(github, tmp_path) == "unverified"
+
+
+@pytest.mark.parametrize("default", ["main", "trunk", "release/current"])
+def test_t1_uses_actual_default_branch_without_classic_protection(github, tmp_path, default):
+    rules = [t1(github)]
+    github[0]["view"]["defaultBranchRef"]["name"] = default
+    github[0][f"repos/acme/project/rules/branches/{default.replace('/', '%2F')}"] = rules
+    github[0]["repos/acme/project/branches/main/protection"] = EnvironmentError_("HTTP 404", fix="gh auth status")
+    assert tier(github, tmp_path) == "T1"
+    assert not any("/protection" in args[2] for args, _ in github[1] if args[:2] == ("gh", "api"))
+
+
+def test_t2_still_requires_readable_classic_protection(github, tmp_path):
+    github[0]["repos/acme/project/branches/main/protection"] = EnvironmentError_("HTTP 403", fix="gh auth status")
+    assert tier(github, tmp_path) == "unverified"
+
+
+@pytest.mark.parametrize("structural", [False, True])
+@pytest.mark.parametrize("defect", ["caller-digest", "overridden-script", "unvalidated-url", "malformed-pin"])
+def test_project_controlled_validator_bytes_cannot_claim_t1_or_t2(github, tmp_path, structural, defect):
+    if structural:
+        t1(github)
+    text = _template("validator-workflow.yml").replace("__TRUSTED_DIGEST__", DIGEST)
+    if defect == "caller-digest":
+        text = text.replace(DIGEST, "${{ inputs.wheel-sha256 }}")
+    elif defect == "overridden-script":
+        text = text.replace("sha256sum -c -", "true # sha256sum -c -")
+    elif defect == "unvalidated-url":
+        text = text.replace("--proto '=https'", "")
+    else:
+        text = text.replace(DIGEST, "placeholder")
+    github[0][f"repos/{WORKFLOW_REPO}/contents/{ops.WORKFLOW_PATH}?ref={SHA}"] = file_response(ops.WORKFLOW_PATH, text)
+    change_workflow(github, "wheel-url: '__WHEEL_URL__'", "wheel-url: 'https://attacker.invalid/merit-0.1.0-py3-none-any.whl'\n      wheel-sha256: '" + "c" * 64 + "'")
+    assert tier(github, tmp_path) == "unverified"
+
+
+def test_t2_rejects_a_caller_digest_override_even_with_trusted_wrapper(github, tmp_path):
+    change_workflow(github, "wheel-url: '__WHEEL_URL__'", "wheel-url: 'https://attacker.invalid/merit-0.1.0-py3-none-any.whl'\n      wheel-sha256: '" + "c" * 64 + "'")
+    assert tier(github, tmp_path) == "T3"
 
 
 def test_missing_gh_or_expected_identity_is_unverified(github, tmp_path, monkeypatch):
@@ -240,7 +280,7 @@ def test_doctor_without_expected_identity_names_unverified(github, tmp_path):
     assert any("enforcement tier: unverified" in value for value in doctor.doctor(tmp_path))
 
 
-def test_resolve_sha_peels_the_real_corrected_local_release_tag(tmp_path, monkeypatch):
+def test_legacy_local_release_tag_is_peeled_but_refused_without_trusted_digest(tmp_path, monkeypatch):
     def local_api(root, endpoint, **kwargs):
         if endpoint == f"repos/{WORKFLOW_REPO}/commits/v0.1.0":
             sha = subprocess.run(["git", "rev-parse", "v0.1.0^{commit}"], cwd=ROOT,
@@ -250,9 +290,10 @@ def test_resolve_sha_peels_the_real_corrected_local_release_tag(tmp_path, monkey
         content = subprocess.run(["git", "show", f"{sha}:{ops.WORKFLOW_PATH}"], cwd=ROOT,
                                  check=True, capture_output=True, encoding="utf-8").stdout
         assert "parse_wheel_filename" in content  # corrected R75/R76 tree
-        return {"type": "file", "path": ops.WORKFLOW_PATH}
+        return file_response(ops.WORKFLOW_PATH, content)
     monkeypatch.setattr(ops, "_api", local_api)
-    assert ops.SHA.fullmatch(ops.resolve_workflow_sha(tmp_path, WORKFLOW_REPO))
+    with pytest.raises(EnvironmentError_, match="does not own a verified validator digest"):
+        ops.resolve_workflow_sha(tmp_path, WORKFLOW_REPO)
 
 
 @pytest.mark.parametrize("sha", ["v0.1.0", "a" * 39, "g" * 40, "a" * 40 + "\n"])
@@ -277,7 +318,7 @@ def test_github_scaffold_preserves_existing_enforcement_files(github, tmp_path, 
     path.write_text("existing user content\n", encoding="utf-8")
     with pytest.raises(UsageError, match="overwrite"):
         ops.init_github(tmp_path, project_id="p", id_prefix="PP", workflow_repo=WORKFLOW_REPO,
-                        wheel_url=WHEEL, wheel_sha256=DIGEST)
+                        wheel_url=WHEEL)
     assert path.read_text(encoding="utf-8") == "existing user content\n"
     assert not (tmp_path / "merit.toml").exists()
     assert not any("--method" in args or args[:3] == ("gh", "repo", "create") for args, _ in github[1])
@@ -286,16 +327,17 @@ def test_github_scaffold_preserves_existing_enforcement_files(github, tmp_path, 
 def test_template_is_unpinned_and_scaffold_resolves_sha(github, tmp_path):
     target = tmp_path / "project"
     findings = ops.init_github(target, project_id="project", id_prefix="PRJ", workflow_repo=WORKFLOW_REPO,
-                               wheel_url=WHEEL, wheel_sha256=DIGEST, github_repo="acme/project")
+                               wheel_url=WHEEL, github_repo="acme/project")
     assert "@__SHA__" in _template("workflow.yml")
     text = (target / ".github/workflows/merit.yml").read_text(encoding="utf-8")
     workflow = yaml.load(text, Loader=yaml.BaseLoader)
     assert workflow["jobs"]["validate"]["uses"] == f"{WORKFLOW_REPO}/{ops.WORKFLOW_PATH}@{SHA}"
     assert "__" not in text
-    assert workflow["jobs"]["validate"]["with"] == {"wheel-url": WHEEL, "wheel-sha256": DIGEST}
+    assert workflow["jobs"]["validate"]["with"] == {"wheel-url": WHEEL}
     assert "merit report --output public/index.html" in text
     steps = workflow["jobs"]["report"]["steps"]
     installer = next(step for step in steps if step.get("name") == "Install the pinned release")
+    assert installer["env"]["MERIT_WHEEL_SHA256"] == DIGEST
     assert installer["working-directory"] == "${{ runner.temp }}"
     assert "working-directory" not in next(step for step in steps if step.get("name") == "Build report")
     assert "actions/upload-artifact@" in text and "createComment" in text and "artifact-url" in text
@@ -313,7 +355,7 @@ def test_template_is_unpinned_and_scaffold_resolves_sha(github, tmp_path):
 def test_rejected_ruleset_warns_with_the_achieved_tier(github, tmp_path):
     github[2].add("orgs/acme/rulesets")
     findings = ops.init_github(tmp_path, project_id="project", id_prefix="PRJ", workflow_repo=WORKFLOW_REPO,
-                               wheel_url=WHEEL, wheel_sha256=DIGEST, github_repo="acme/project")
+                               wheel_url=WHEEL, github_repo="acme/project")
     assert any("ruleset was rejected" in finding and "achieved enforcement tier: T2" in finding for finding in findings)
 
 
@@ -330,20 +372,18 @@ def test_cli_github_wires_every_argument(github, tmp_path, monkeypatch, capsys):
         return ["warning: ruleset rejected; achieved enforcement tier: T3"]
     monkeypatch.setattr(ops, "init_github", setup)
     assert cli.main(["init", str(tmp_path), "--project-id", "p", "--id-prefix", "PP", "--github",
-                     "--workflow-repo", WORKFLOW_REPO, "--github-repo", "acme/project", "--wheel-url", WHEEL,
-                     "--wheel-sha256", DIGEST]) == 0
+                     "--workflow-repo", WORKFLOW_REPO, "--github-repo", "acme/project", "--wheel-url", WHEEL]) == 0
     assert called == [(tmp_path, {"project_id": "p", "id_prefix": "PP", "workflow_repo": WORKFLOW_REPO,
-                                 "wheel_url": WHEEL, "wheel_sha256": DIGEST, "github_repo": "acme/project"})]
+                                 "wheel_url": WHEEL, "github_repo": "acme/project"})]
     assert "achieved enforcement tier: T3" in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("url,digest", [("http://example.com/merit.whl", DIGEST), (WHEEL, "not-a-hash"),
-    (WHEEL.replace("merit-", "evil-"), DIGEST), (WHEEL + "?x=y", DIGEST), (WHEEL.replace("https://", "https://x'@"), DIGEST),
-    ("https://[broken/merit-0.1.0-py3-none-any.whl", DIGEST)])
-def test_invalid_wheel_configuration_writes_nothing(github, tmp_path, url, digest):
+@pytest.mark.parametrize("url", ["http://example.com/merit.whl", WHEEL.replace("merit-", "evil-"),
+    WHEEL + "?x=y", WHEEL.replace("https://", "https://x'@"), "https://[broken/merit-0.1.0-py3-none-any.whl"])
+def test_invalid_wheel_configuration_writes_nothing(github, tmp_path, url):
     with pytest.raises(UsageError):
         ops.init_github(tmp_path, project_id="p", id_prefix="PP", workflow_repo=WORKFLOW_REPO,
-                        wheel_url=url, wheel_sha256=digest)
+                        wheel_url=url)
     assert list(tmp_path.iterdir()) == []
 
 

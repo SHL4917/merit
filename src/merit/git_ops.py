@@ -47,11 +47,37 @@ def resolve_workflow_sha(repo_root: Path, workflow_repo: str, *, tag: str | None
     if not isinstance(sha, str) or not SHA.fullmatch(sha):
         raise EnvironmentError_("The MERIT release tag did not resolve to a 40-hex commit.",
                                 fix=f"gh api repos/{workflow_repo}/commits/{tag}")
-    workflow = _api(repo_root, f"repos/{workflow_repo}/contents/{WORKFLOW_PATH}?ref={sha}")
-    if not isinstance(workflow, dict) or workflow.get("type") != "file" or workflow.get("path") != WORKFLOW_PATH:
+    workflow = _remote_content(repo_root, workflow_repo, sha, WORKFLOW_PATH)
+    if workflow is None:
         raise EnvironmentError_("The MERIT release tree does not contain its reusable workflow.",
                                 fix=f"gh api repos/{workflow_repo}/contents/{WORKFLOW_PATH}?ref={sha}")
+    _trusted_workflow_digest(workflow)
     return sha.lower()
+
+
+def _trusted_workflow_digest(text: str) -> str:
+    """Recognize the reviewed wrapper contract with a literal release-owned pin.
+
+    Compare the complete parsed workflow, not a digest-shaped value beside an
+    arbitrary script. Neither caller inputs nor extra steps may replace bytes.
+    The packaged contract has a placeholder, so publishing its wheel and then
+    embedding that wheel's digest in the external workflow has no hash cycle.
+    """
+    from merit.scaffold import _template
+    try:
+        data = yaml.load(text, Loader=yaml.BaseLoader)
+        installer = next(step for step in data["jobs"]["validate"]["steps"] if step.get("id") == "install-merit")
+        digest = installer["env"]["MERIT_WHEEL_SHA256"]
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", digest):
+            raise ValueError("release digest is not a static 64-hex pin")
+        expected = yaml.load(_template("validator-workflow.yml").replace("__TRUSTED_DIGEST__", digest),
+                             Loader=yaml.BaseLoader)
+        if data != expected:
+            raise ValueError("workflow differs from the trusted validator contract")
+        return digest.lower()
+    except (ValueError, KeyError, TypeError, AttributeError, StopIteration, yaml.YAMLError) as exc:
+        raise EnvironmentError_(f"The release workflow does not own a verified validator digest: {exc}.",
+                                fix="gh auth status") from exc
 
 
 def _remote_content(root: Path, repository: str, branch: str, name: str) -> str | None:
@@ -59,7 +85,7 @@ def _remote_content(root: Path, repository: str, branch: str, name: str) -> str 
     if value is None:
         return None
     if value.get("type") != "file" or value.get("encoding") != "base64" or value.get("path") != name:
-        raise ValueError("unreadable GitHub file")
+        raise EnvironmentError_("GitHub returned an unreadable file.", fix="gh auth status")
     return base64.b64decode(value["content"], validate=False).decode("utf-8")
 
 
@@ -108,7 +134,6 @@ def detect_tier(repo_root: Path, workflow_repo: str | None = None) -> str:
         trusted = _api(repo_root, f"repos/{workflow_repo}")
         if trusted["full_name"].casefold() != workflow_repo.casefold() or type(trusted["id"]) is not int:
             return "unverified"
-        protection = _api(repo_root, f"repos/{repository}/branches/main/protection")
         # This endpoint returns only active rules applicable to this repository
         # and this exact branch, including inherited organization rulesets.
         rules = _api(repo_root, f"repos/{repository}/rules/branches/{quote(branch, safe='')}")
@@ -127,6 +152,7 @@ def detect_tier(repo_root: Path, workflow_repo: str | None = None) -> str:
                         and required.get("path") == WORKFLOW_PATH
                         and (required.get("sha") or required.get("ref")) == expected_sha):
                     return "T1"
+        protection = _api(repo_root, f"repos/{repository}/branches/{quote(branch, safe='')}/protection")
         checks = protection.get("required_status_checks") or {}
         required = checks.get("contexts", []) or checks.get("checks", [])
         if not required:
@@ -146,6 +172,8 @@ def detect_tier(repo_root: Path, workflow_repo: str | None = None) -> str:
         job = jobs.get("validate", {})
         if (not isinstance(job, dict) or job.get("uses", "").casefold() != expected.casefold()
                 or "if" in job or "needs" in job):
+            return "T3"
+        if set(job.get("with", {})) != {"wheel-url"}:
             return "T3"
         contexts = set(checks.get("contexts", [])) | {check.get("context") for check in checks.get("checks", [])}
         if "validate / validate" not in contexts:
@@ -170,7 +198,7 @@ def create_remote(repo_root: Path, name: str) -> str:
 
 
 def init_github(target: Path, *, project_id: str, id_prefix: str, workflow_repo: str,
-                wheel_url: str, wheel_sha256: str, github_repo: str | None = None) -> list[str]:
+                wheel_url: str, github_repo: str | None = None) -> list[str]:
     """Scaffold, publish its initial branch, request protections, then verify them."""
     from merit.scaffold import init, _template, _write
     workflow_repo = _workflow_repository(workflow_repo)
@@ -182,9 +210,8 @@ def init_github(target: Path, *, project_id: str, id_prefix: str, workflow_repo:
     if (url.scheme != "https" or not url.hostname or url.username or url.password
             or url.query or url.fragment or any(char.isspace() or ord(char) < 32 for char in wheel_url)
             or not re.fullmatch(r"merit-[A-Za-z0-9_.+]+-[A-Za-z0-9_]+-[A-Za-z0-9_]+-[A-Za-z0-9_]+\.whl", filename)
-            or not re.fullmatch(r"https://[A-Za-z0-9./_~%:+-]+", wheel_url)
-            or not re.fullmatch(r"[0-9a-fA-F]{64}", wheel_sha256)):
-        raise UsageError("GitHub setup requires an explicit HTTPS MERIT wheel URL and a pinned 64-hex digest.",
+            or not re.fullmatch(r"https://[A-Za-z0-9./_~%:+-]+", wheel_url)):
+        raise UsageError("GitHub setup requires an explicit HTTPS MERIT wheel transport URL.",
                          fix="merit init --github --help")
     target = Path(target).resolve()
     target.mkdir(parents=True, exist_ok=True)
@@ -193,6 +220,7 @@ def init_github(target: Path, *, project_id: str, id_prefix: str, workflow_repo:
                          fix="merit init <new-directory> --github --help")
     # Resolve before writing any scaffold files, against the actual tagged tree.
     sha = resolve_workflow_sha(target, workflow_repo)
+    wheel_sha256 = _trusted_workflow_digest(_remote_content(target, workflow_repo, sha, WORKFLOW_PATH))
     identity = _api(target, "user")["login"]
     if not isinstance(identity, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*", identity):
         raise EnvironmentError_("GitHub did not return a valid authenticated login.", fix="gh auth status")

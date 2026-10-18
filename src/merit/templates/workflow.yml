@@ -13,7 +13,6 @@ jobs:
     uses: __WORKFLOW_REPO__/.github/workflows/merit-validate.yml@__SHA__
     with:
       wheel-url: '__WHEEL_URL__'
-      wheel-sha256: '__WHEEL_SHA256__'
   report:
     if: ${{ always() }}
     needs: validate

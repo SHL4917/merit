@@ -1,0 +1,73 @@
+name: MERIT validation
+
+on:
+  workflow_call:
+    inputs:
+      wheel-url:
+        description: HTTPS transport URL; bytes must match this trusted release's digest
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify and install released MERIT
+        id: install-merit
+        shell: bash
+        working-directory: ${{ runner.temp }}
+        env:
+          MERIT_WHEEL_URL: ${{ inputs.wheel-url }}
+          MERIT_WHEEL_SHA256: '__TRUSTED_DIGEST__'
+        run: |
+          set -euo pipefail
+          [[ "$MERIT_WHEEL_SHA256" =~ ^[0-9a-fA-F]{64}$ ]] || {
+            echo 'trusted release digest must be exactly 64 hexadecimal characters' >&2
+            exit 1
+          }
+          [[ "$MERIT_WHEEL_URL" == https://* ]] || {
+            echo 'wheel-url must be an explicit HTTPS URL' >&2
+            exit 1
+          }
+          wheel_filename="$(python - <<'PY'
+          import os
+          import re
+          from urllib.parse import unquote, urlsplit
+          # Reuse the wheel parser bundled with the pip that installs it below.
+          from pip._vendor.packaging.utils import InvalidWheelFilename, parse_wheel_filename
+
+          raw_url = os.environ['MERIT_WHEEL_URL']
+          url = urlsplit(raw_url)
+          if (url.scheme != 'https' or not url.hostname or url.username or url.password
+                  or any(character.isspace() or ord(character) < 32 for character in raw_url)):
+              raise SystemExit('wheel-url must be an explicit HTTPS URL without credentials or whitespace')
+          filename = unquote(url.path.rsplit('/', 1)[-1])
+          if not re.fullmatch(r'[A-Za-z0-9_.+-]+\.whl', filename):
+              raise SystemExit('wheel-url path must end in a safe wheel filename')
+          try:
+              name, version, build, tags = parse_wheel_filename(filename)
+          except InvalidWheelFilename as error:
+              raise SystemExit(f'invalid wheel filename: {error}')
+          if name != 'merit' or any(not re.fullmatch(r'[A-Za-z0-9_]+', part)
+                                    for tag in tags for part in (tag.interpreter, tag.abi, tag.platform)):
+              raise SystemExit('wheel-url must name a valid MERIT wheel')
+          print(filename)
+          PY
+          )"
+          curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 --output merit.whl "$MERIT_WHEEL_URL"
+          printf '%s  merit.whl\n' "$MERIT_WHEEL_SHA256" | sha256sum -c -
+          # pip requires a valid wheel filename, including version and platform tags.
+          mv -- merit.whl "$wheel_filename"
+          pip install "./$wheel_filename"
+      - name: Validate project
+        run: merit validate

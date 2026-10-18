@@ -1,6 +1,9 @@
 """Release provenance, offline packaging, and executable wheel-integrity checks."""
 
 import hashlib
+import base64
+import csv
+import io
 import os
 from pathlib import Path
 import re
@@ -14,6 +17,7 @@ import pytest
 import yaml
 
 from merit import __version__
+from merit.git_ops import _trusted_workflow_digest
 from test_git_ops import git, repo
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -40,7 +44,8 @@ def test_package_and_module_versions_match():
 def test_reusable_workflow_interface_and_history():
     data = workflow("merit-validate.yml")
     inputs = data["on"]["workflow_call"]["inputs"]
-    for name in ("wheel-url", "wheel-sha256"):
+    assert set(inputs) == {"wheel-url"}
+    for name in ("wheel-url",):
         assert inputs[name]["required"] == "true"
         assert inputs[name]["type"] == "string"
         assert "default" not in inputs[name]
@@ -56,7 +61,9 @@ def test_reusable_workflow_interface_and_history():
     step = install_step()
     assert step["shell"] == "bash"
     assert step["env"]["MERIT_WHEEL_URL"] == "${{ inputs.wheel-url }}"
-    assert step["env"]["MERIT_WHEEL_SHA256"] == "${{ inputs.wheel-sha256 }}"
+    digest = step["env"]["MERIT_WHEEL_SHA256"]
+    assert re.fullmatch(r"[0-9a-f]{64}", digest)
+    assert _trusted_workflow_digest(text) == digest
     assert "${{ inputs." not in step["run"]
     assert "sha256sum -c" in step["run"]
     assert step["run"].index("sha256sum -c") < step["run"].index("pip install")
@@ -70,7 +77,7 @@ def bash_executable():
     return shutil.which("bash")
 
 
-def run_install(tmp_path, digest, url="https://example.invalid/merit-0.1.0-py3-none-any.whl"):
+def run_install(tmp_path, digest, url="https://example.invalid/merit-0.1.0-py3-none-any.whl", *, content=b"offline wheel fixture\n", caller_digest=None):
     bash = bash_executable()
     if bash is None:
         pytest.skip("Bash is needed to exercise the Ubuntu workflow script")
@@ -87,12 +94,13 @@ pip() {
   printf '%s\n' "$@" > pip-args
 }
 '''
-    content = b"offline wheel fixture\n"
     (tmp_path / "fixture.whl").write_bytes(content)
     result = subprocess.run(
         [bash, "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", prelude + install_step()["run"]],
         cwd=tmp_path, capture_output=True, encoding="utf-8", check=False,
-        env={**os.environ, "MERIT_WHEEL_SHA256": digest, "MERIT_WHEEL_URL": url,
+        # Model GitHub's trusted step env overriding caller-controlled values.
+        env={**os.environ, "MERIT_WHEEL_SHA256": caller_digest or "", "INPUT_WHEEL_SHA256": caller_digest or "",
+             **{"MERIT_WHEEL_SHA256": digest, "MERIT_WHEEL_URL": url},
              "MERIT_TEST_PYTHON": Path(sys.executable).as_posix()},
     )
     events = (tmp_path / "events").read_text(encoding="utf-8").splitlines() if (tmp_path / "events").exists() else []
@@ -152,6 +160,17 @@ def test_wrong_digest_stops_before_install(tmp_path):
     assert not (tmp_path / f"merit-{__version__}-py3-none-any.whl").exists()
 
 
+def test_replacing_caller_url_and_digest_cannot_replace_trusted_validator_bytes(tmp_path):
+    trusted = hashlib.sha256(b"offline wheel fixture\n").hexdigest()
+    malicious = b"replacement validator that always passes\n"
+    result, events = run_install(tmp_path, trusted,
+        "https://attacker.invalid/merit-0.1.0-py3-none-any.whl", content=malicious,
+        caller_digest=hashlib.sha256(malicious).hexdigest())
+    assert result.returncode != 0
+    assert events == ["download"]
+    assert not (tmp_path / "pip-args").exists()
+
+
 @pytest.mark.parametrize("digest", ["", "a" * 63, "a" * 65, "g" * 64, "a" * 64 + "\n", "$(touch injected)"])
 def test_malformed_digest_is_rejected_before_download(tmp_path, digest):
     result, events = run_install(tmp_path, digest)
@@ -175,6 +194,10 @@ def test_release_builds_wheel_and_attaches_it_to_the_existing_tag():
     steps = job["steps"]
     scripts = "\n".join(step.get("run", "") for step in steps)
     assert "python -m build --wheel" in scripts
+    assert "--no-isolation" in scripts
+    assert data["jobs"]["release"]["env"]["SOURCE_DATE_EPOCH"] == "315532800"
+    assert "setuptools==84.0.0" in scripts and "wheel==0.48.0" in scripts
+    assert "MERIT_WHEEL_SHA256" in scripts
     assert "sha256sum" in scripts and "dist/*.whl" in scripts
     assert "GITHUB_REF_NAME" in scripts and "pyproject.toml" in scripts
     assert WORKFLOW in scripts
@@ -241,17 +264,36 @@ def test_built_wheel_contains_shipped_templates_and_resources(tmp_path):
     for name in ("pyproject.toml", "README.md"):
         shutil.copyfile(ROOT / name, source / name)
     shutil.copytree(ROOT / "src" / "merit", source / "src" / "merit", ignore=shutil.ignore_patterns("__pycache__"))
-    output = tmp_path / "wheels"
+    release_steps = workflow("release.yml")["jobs"]["release"]["steps"]
+    recipe = next(step["run"] for step in release_steps if step.get("name") == "Build wheel and digest")
+    python_blocks = re.findall(r"python - <<'PY'\n(.*?)\nPY", recipe, re.S)
+    assert len(python_blocks) == 2
+    subprocess.run([sys.executable, "-c", python_blocks[0]], cwd=source, check=True, capture_output=True)
+    (source / ".github/workflows").mkdir(parents=True)
+    shutil.copyfile(ROOT / WORKFLOW, source / WORKFLOW)
+    output = source / "dist"
     result = subprocess.run(
         [interpreter, "-m", "pip", "wheel", "--no-index", "--no-build-isolation", "--no-deps", "--wheel-dir", str(output), str(source)],
-        capture_output=True, encoding="utf-8", check=False, env={**os.environ, "PIP_DISABLE_PIP_VERSION_CHECK": "1"},
+        capture_output=True, encoding="utf-8", check=False,
+        env={**os.environ, "PIP_DISABLE_PIP_VERSION_CHECK": "1", "SOURCE_DATE_EPOCH": "315532800"},
     )
     assert result.returncode == 0, result.stdout + result.stderr
     wheels = list(output.glob("*.whl"))
     assert [path.name for path in wheels] == [f"merit-{__version__}-py3-none-any.whl"]
+    canonical = subprocess.run([sys.executable, "-c", python_blocks[1]], cwd=source,
+                               capture_output=True, encoding="utf-8", check=False)
+    assert canonical.returncode == 0, canonical.stdout + canonical.stderr
+    assert hashlib.sha256(wheels[0].read_bytes()).hexdigest() == install_step()["env"]["MERIT_WHEEL_SHA256"]
     with zipfile.ZipFile(wheels[0]) as archive:
+        assert archive.testzip() is None
+        record = next(name for name in archive.namelist() if name.endswith(".dist-info/RECORD"))
+        for name, digest, size in csv.reader(io.StringIO(archive.read(record).decode("utf-8"))):
+            if name != record:
+                data = archive.read(name)
+                expected = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode("ascii")
+                assert digest == "sha256=" + expected and int(size) == len(data)
         names = set(archive.namelist())
-        for name in ("AGENTS.md", "CLAUDE.md", "GEMINI.md", "merit.toml", "workflow.yml", "CODEOWNERS", "pre-commit"):
+        for name in ("AGENTS.md", "CLAUDE.md", "GEMINI.md", "merit.toml", "workflow.yml", "validator-workflow.yml", "CODEOWNERS", "pre-commit"):
             assert f"merit/templates/{name}" in names
         for resource in (ROOT / "src" / "merit").rglob("*"):
             if resource.is_file() and resource.suffix in (".json", ".md", ".html", ".toml"):

@@ -4,11 +4,7 @@ on:
   workflow_call:
     inputs:
       wheel-url:
-        description: Explicit HTTPS URL of the released MERIT wheel
-        required: true
-        type: string
-      wheel-sha256:
-        description: Pinned SHA-256 digest of the released wheel (64 hex characters)
+        description: HTTPS transport URL; bytes must match this trusted release's digest
         required: true
         type: string
 
@@ -32,11 +28,11 @@ jobs:
         working-directory: ${{ runner.temp }}
         env:
           MERIT_WHEEL_URL: ${{ inputs.wheel-url }}
-          MERIT_WHEEL_SHA256: ${{ inputs.wheel-sha256 }}
+          MERIT_WHEEL_SHA256: '3039b60a2a13f625e909621e67ae2ac6d0a13d7c868ecd8bf93b2dcf3c694365'
         run: |
           set -euo pipefail
           [[ "$MERIT_WHEEL_SHA256" =~ ^[0-9a-fA-F]{64}$ ]] || {
-            echo 'wheel-sha256 must be exactly 64 hexadecimal characters' >&2
+            echo 'trusted release digest must be exactly 64 hexadecimal characters' >&2
             exit 1
           }
           [[ "$MERIT_WHEEL_URL" == https://* ]] || {
