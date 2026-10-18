@@ -215,6 +215,18 @@ def test_awaiting_confirmation_is_derived_only_never_in_a_stored_enum():
     }
 
 
+def test_id_patterns_use_only_constructs_valid_in_python_and_ecmascript():
+    # The schemas reuse these exact strings, so no Python-only anchor: \Z is a
+    # SyntaxError in ECMA-262 unicode mode, and $ is lax in Python re.search.
+    for kind, pattern in ID_PATTERNS.items():
+        assert pattern.startswith("^"), kind
+        assert pattern.endswith(r"(?![\s\S])"), kind
+        assert "\\Z" not in pattern and "\\z" not in pattern, kind
+        assert not pattern.endswith("$"), kind
+        assert "\\d" not in pattern, kind
+        assert pattern.isascii(), kind
+
+
 def test_id_patterns_are_ascii_only_and_anchored_as_the_jsonschema_library_applies_them():
     # jsonschema applies `pattern` with re.search, where `$` also matches before a
     # trailing newline. Test through the library itself, not through re.fullmatch.
@@ -231,7 +243,8 @@ def test_id_patterns_are_ascii_only_and_anchored_as_the_jsonschema_library_appli
         assert validator.is_valid(value), kind
         assert re.search(ID_PATTERNS[kind], value), kind
         bad = [value + "\n", value + "\n\n", value + "0", value.lower(),
-               value[:-1] + arabic_indic_four, " " + value, value + " "]
+               value[:-1] + arabic_indic_four, " " + value, value + " ",
+               value + chr(13), value + chr(0x2028), value + chr(0x85)]
         for candidate in bad:
             assert not validator.is_valid(candidate), (kind, candidate)
             assert not re.search(ID_PATTERNS[kind], candidate), (kind, candidate)
@@ -810,6 +823,43 @@ def test_a_confirmation_authored_by_the_note_author_is_self_confirmation():
     assert is_provisional(decision, repo) is True
 
 
+def test_the_note_author_cannot_confirm_through_a_third_partys_transcript():
+    # Alex wrote the note. Bob's transcript is a legitimate third-party source in
+    # which Alex speaks. Every literal condition passes (source is not a self-note,
+    # speaker matches confirmed_by, source author Bob is not Alex) - but Alex is
+    # confirming Alex, so no second person is involved.
+    repo = make_repo()
+    repo.source_meta["sources/2026-09-27-bobs-transcript.md"] = {
+        "record_type": "transcript", "authored_by": "Bob"}
+    decision = make_decision(
+        record_source=NOTE, confirmed_by="alex",
+        confirmation_record=ev("sources/2026-09-27-bobs-transcript.md", speaker="alex"))
+    issue = make_issue()
+    repo.issues = {issue.id: issue}
+    repo.decisions = {decision.id: decision}
+
+    assert "note's own author" in confirmation_defect(decision, repo)
+    assert is_provisional(decision, repo) is True
+    assert effective_status(issue, repo) == "awaiting_confirmation"
+    assert derive_open_issues(make_requirement(), repo) == ["ISS-0001"]
+
+    # control: the same transcript confirming a different person is accepted
+    other = make_decision(
+        record_source=NOTE, confirmed_by="Bob",
+        confirmation_record=ev("sources/2026-09-27-bobs-transcript.md", speaker="Bob"))
+    assert confirmation_defect(other, repo) is None
+    assert is_provisional(other, repo) is False
+
+
+def test_the_note_author_rule_applies_only_to_a_note_basis():
+    # A transcript basis is not provisional; authorship of a note is irrelevant to it.
+    repo = make_repo()
+    decision = confirmed_by_sam(record_source=TRANSCRIPT, confirmed_by="alex",
+                                confirmation=ev(EMAIL, speaker="alex"))
+    repo.source_meta[EMAIL]["authored_by"] = "alex"
+    assert is_provisional(decision, repo) is False
+
+
 def test_a_confirmation_from_an_unknown_source_is_a_defect():
     decision = confirmed_by_sam(confirmation=ev("sources/nowhere.md", speaker="Sam Ellis"))
     assert "no known record_type" in confirmation_defect(decision, make_repo())
@@ -885,6 +935,12 @@ YAML_FOOTGUN_TEXTS = [
     '"double"', "& anchor", "* alias", "! tag", "@at", "`tick", "%percent", "|", ">",
     " leading space", "trailing space ", "line one\nline two", "line one\n\nline three\n",
     "tab\there", "colon: and # hash", "100%", "a: b: c",
+    # YAML line-separator class members: NEL, LS, PS (single-quoted, NEL reloads as a space)
+    "a" + chr(0x85) + "b", chr(0x85), "a" + chr(0x2028) + "b", "a" + chr(0x2029) + "b",
+    "a" + chr(0x2028) + chr(0x85) + chr(0x2029), "a\r\nb", "a\rb",
+    # other characters YAML treats specially
+    "a" + chr(0xA0) + "b", chr(0xFEFF) + "x", "a" + chr(0x7F) + "b", "a" + chr(0x9F) + "b",
+    "a" + chr(0x1B) + "b", "end" + chr(0x85),
 ]
 
 

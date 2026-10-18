@@ -9,16 +9,18 @@ enforced here instead of by memory.
 
 Non-ASCII characters in code are written as chr(0x2019) or built by a helper.
 
-Scope: Python files (*.py) under src/ and tests/. A non-ASCII *data fixture* (for
-example a transcript used to test a paraphrase checker) is legitimate and is not
-scanned; but a test that reads one must still build any non-ASCII *code literal*
-with chr(), because that is where an escape was silently expanded before.
+Scope: EVERY file under src/ (code, templates, package data) and the *.py files
+under tests/. A non-ASCII *data fixture* under tests/ (for example a transcript
+used to test a paraphrase checker) is legitimate and is not scanned; but a test
+that reads one must still build any non-ASCII *code literal* with chr(), because
+that is where an escape was silently expanded before.
 """
 
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-POLICED = ("src", "tests")
+# directory -> glob. src/ is policed in full; tests/ only for code, not data fixtures.
+POLICED = {"src": "*", "tests": "*.py"}
 SKIPPED_DIRS = {"__pycache__"}
 
 
@@ -27,13 +29,13 @@ def _skipped(path: Path) -> bool:
 
 
 def find_non_ascii(root: Path, policed=POLICED):
-    """Return [(relative_path, [byte offsets])] for every non-ASCII .py file."""
+    """Return [(relative_path, [byte offsets])] for every non-ASCII policed file."""
     offenders = []
-    for name in policed:
+    for name, pattern in policed.items():
         base = root / name
         if not base.is_dir():
             continue
-        for path in sorted(base.rglob("*.py")):
+        for path in sorted(base.rglob(pattern)):
             if not path.is_file() or _skipped(path.relative_to(root)):
                 continue
             offsets = [i for i, b in enumerate(path.read_bytes()) if b > 0x7F]
@@ -60,14 +62,21 @@ def test_the_scan_itself_detects_a_planted_character(tmp_path):
     (tmp_path / "src" / "clean.py").write_bytes(b"x = 1\n")
     (tmp_path / "src" / "dirty.py").write_bytes(b"x = '" + bytes([0xC3, 0xA9]) + b"'\n")
     (tmp_path / "tests" / "dirty_test.py").write_bytes(b"ok\n" + bytes([0xE2, 0x80, 0x99]))
-    # a non-ASCII data fixture is deliberately out of scope
+    # src/ is policed in full: a non-Python template or package-data file counts
+    (tmp_path / "src" / "templates").mkdir()
+    (tmp_path / "src" / "templates" / "AGENTS.md").write_bytes(b"a " + bytes([0xE2, 0x80, 0x94]))
+    # a non-ASCII data fixture under tests/ is deliberately out of scope
     (tmp_path / "tests" / "fixture.txt").write_bytes(bytes([0xE2, 0x80, 0x99]))
     (tmp_path / "src" / "__pycache__").mkdir()
     (tmp_path / "src" / "__pycache__" / "skip.py").write_bytes(bytes([0xFF, 0xFE]))
 
     found = dict(find_non_ascii(tmp_path))
 
-    assert found == {"src/dirty.py": [5, 6], "tests/dirty_test.py": [3, 4, 5]}
+    assert found == {
+        "src/dirty.py": [5, 6],
+        "src/templates/AGENTS.md": [2, 3, 4],
+        "tests/dirty_test.py": [3, 4, 5],
+    }
 
 
 def test_the_policed_directories_exist_so_the_scan_is_not_vacuous():
@@ -75,3 +84,8 @@ def test_the_policed_directories_exist_so_the_scan_is_not_vacuous():
         assert (ROOT / name).is_dir(), name
     assert any((ROOT / "src").rglob("*.py"))
     assert any((ROOT / "tests").rglob("*.py"))
+
+
+def test_src_scan_reaches_the_shipped_non_python_files():
+    scanned = {p.name for p in (ROOT / "src").rglob("*") if p.is_file() and not _skipped(p)}
+    assert "AGENTS.md" in scanned and "merit.toml" in scanned

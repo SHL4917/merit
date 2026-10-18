@@ -70,15 +70,17 @@ BLOCKING_STATUSES = ("open", AWAITING_CONFIRMATION)
 SELF_RECORDED_NOTE = "self_recorded_note"
 
 # ASCII digits via [0-9]: \d matches non-ASCII digits (found in Task 4's review).
-# Anchored with \Z, not $: the python jsonschema library applies `pattern` with
-# re.search, where $ also matches before a trailing newline, so "REQ-SMP-0001<newline>"
-# would pass. (\Z is Python regex; this tool validates only with python jsonschema.)
+# Anchored with (?![\s\S]) ("no character follows"), not $ or \Z. The python
+# jsonschema library applies `pattern` with re.search, where $ also matches before
+# a trailing newline. \Z is Python-only and a SyntaxError in ECMA-262 unicode mode
+# (Ajv compiles with the u flag). The lookahead is strict and valid in Python re
+# and in ECMA with or without u, so the schemas reuse these exact strings.
 ID_PATTERNS: dict[str, str] = {
-    "requirement": r"^REQ-[A-Z]{2,6}-[0-9]{4}\Z",
-    "candidate": r"^CAN-[0-9]{4}\Z",
-    "issue": r"^ISS-[0-9]{4}\Z",
-    "decision": r"^DEC-[0-9]{4}\Z",
-    "supersession": r"^SUP-[0-9]{4}\Z",
+    "requirement": r"^REQ-[A-Z]{2,6}-[0-9]{4}(?![\s\S])",
+    "candidate": r"^CAN-[0-9]{4}(?![\s\S])",
+    "issue": r"^ISS-[0-9]{4}(?![\s\S])",
+    "decision": r"^DEC-[0-9]{4}(?![\s\S])",
+    "supersession": r"^SUP-[0-9]{4}(?![\s\S])",
 }
 
 # A date as YAML gives it (2026-10-18 loads as a date) or, if quoted, a string.
@@ -374,6 +376,20 @@ class _Dumper(yaml.SafeDumper):
         return super().increase_indent(flow, False)
 
 
+# NEL (U+0085), LS (U+2028) and PS (U+2029) are YAML line breaks. Inside a
+# single-quoted scalar they fold to a space on reload, silently changing a quote.
+# Built with chr() because source files here are pure ASCII.
+_LINE_BREAKS = (chr(0x85), chr(0x2028), chr(0x2029))
+
+
+def _represent_str(dumper: yaml.SafeDumper, data: str) -> yaml.ScalarNode:
+    style = '"' if any(c in data for c in _LINE_BREAKS) else None
+    return dumper.represent_scalar("tag:yaml.org,2002:str", data, style=style)
+
+
+_Dumper.add_representer(str, _represent_str)
+
+
 def _to_data(value: Any) -> Any:
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         return {
@@ -444,8 +460,11 @@ def confirmation_defect(decision: Decision, repo: Repo) -> str | None:
     * a ``confirmation_record`` exists (a bare name is self-attestation);
     * its source has a known ``record_type`` that is not ``self_recorded_note``;
     * its ``speaker``, or its source's ``authored_by``, equals ``confirmed_by``;
-    * when the decision's own record is a self-recorded note, the confirmation
-      source is not authored by that note's ``authored_by`` (no self-confirmation).
+    * when the decision's own record is a self-recorded note, neither
+      ``confirmed_by`` nor the confirmation source's ``authored_by`` is that
+      note's ``authored_by``. The first closes "Alex confirms Alex" using a
+      third party's transcript in which Alex speaks; both implement the spec's
+      "until a second named person confirms" (D7).
 
     Deliberate boundary: anchoring validity is V9's alone, through ``anchor``.
     This function reads sidecar metadata only. It never reads source text or
@@ -470,6 +489,8 @@ def confirmation_defect(decision: Decision, repo: Repo) -> str | None:
         return "neither the confirmation_record speaker nor its source author is confirmed_by"
     if _record_type(decision.record.source, repo) == SELF_RECORDED_NOTE:
         note_author = _authored_by(decision.record.source, repo)
+        if note_author is not None and name == note_author:
+            return "confirmed_by is the note's own author (a second person must confirm)"
         if note_author is not None and confirmer_authored == note_author:
             return "the confirmation_record is authored by the note's own author"
     return None
