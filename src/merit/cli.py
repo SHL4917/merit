@@ -2,9 +2,11 @@
 
 import argparse
 import datetime
+import json
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from importlib.resources import files
 from pathlib import Path
 from subprocess import list2cmdline
 
@@ -186,6 +188,101 @@ def _ingest_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def command_catalogue(parser: argparse.ArgumentParser) -> list[dict]:
+    """Describe every parser, including nested subcommands, from runtime actions."""
+    catalogue = []
+
+    def visit(current: argparse.ArgumentParser, name: str) -> None:
+        args = []
+        flags = []
+        example = [name]
+        children = []
+        for action in current._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                children.extend(action.choices.items())
+            elif action.option_strings:
+                flags.extend(action.option_strings)
+                if action.required:
+                    example.append(action.option_strings[0])
+                    if action.nargs != 0:
+                        example.append(f"<{action.dest}>")
+            else:
+                args.append(action.dest)
+                if action.nargs not in ("?", "*"):
+                    example.append(f"<{action.dest}>")
+        catalogue.append({
+            "name": name,
+            "args": args,
+            "flags": flags,
+            "exit_codes": {str(int(code)): code.name.lower() for code in ExitCode},
+            "example": " ".join(example),
+        })
+        for child_name, child in children:
+            visit(child, f"{name} {child_name}")
+
+    visit(parser, parser.prog)
+    return catalogue
+
+
+def _help_agent(args: argparse.Namespace) -> None:
+    """Print the agent operating manual and runtime command catalogue."""
+    catalogue = command_catalogue(build_parser())
+    if args.json:
+        print(json.dumps(catalogue, indent=2))
+        return
+    print("Read this manual at the start of every session; use merit prompt <stage> next.")
+    print("merit apply is the only write path for governed artefacts: write a proposal")
+    print("under proposals/ and run merit apply. Never hand-edit governed artefacts.")
+    print("merit ingest is the narrow create-only exception for source bundles.")
+    print("Copy quotes verbatim; never paraphrase a quote. If anchoring fails, downgrade")
+    print("the claim to inferred with an explicit rationale; unsupported ideas are candidates.")
+    print("The tool never merges or tags; human approval owns baseline handoff.")
+    print("Exit codes: 0 success; 1 validation failure; 2 usage error; 3 anchor failure; 4 environment error.")
+    for command in catalogue:
+        print(f"\n{command['name']}")
+        print("  args: " + ", ".join(command["args"]))
+        print("  flags: " + ", ".join(command["flags"]))
+        print("  exit_codes: " + json.dumps(command["exit_codes"]))
+        print("  example: " + command["example"])
+
+
+def _help_agent_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--json", action="store_true", help="emit the command catalogue as JSON")
+
+
+def _resource(name: str, directory: str, suffix: str, command: str) -> str:
+    # Compare resource names, never interpret user input as a resource path.
+    resources = {item.name.removesuffix(suffix): item
+                 for item in files("merit").joinpath(directory).iterdir()
+                 if item.name.endswith(suffix)}
+    if name not in resources:
+        raise UsageError(f"Unknown {command}: {name!r}. Choose from {', '.join(sorted(resources))}.",
+                         fix=f"merit {command} {sorted(resources)[0]}")
+    return resources[name].read_text(encoding="utf-8")
+
+
+def _prompt(args: argparse.Namespace) -> None:
+    """Print a packaged stage playbook (intake, draft, review, clarify, baseline)."""
+    stages = {item.name[3:-3]: item.name[:-3]
+              for item in files("merit").joinpath("prompts").iterdir()
+              if item.name.endswith(".md")}
+    stage = stages.get(args.stage, args.stage)
+    print(_resource(stage, "prompts", ".md", "prompt"), end="")
+
+
+def _prompt_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("stage", help="intake, draft, review, clarify, baseline (or numbered resource name)")
+
+
+def _schema(args: argparse.Namespace) -> None:
+    """Print a packaged artefact JSON Schema."""
+    print(_resource(args.artefact, "schemas", ".schema.json", "schema"), end="")
+
+
+def _schema_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("artefact", help="artefact name, for example proposal or requirement")
+
+
 @dataclass(frozen=True)
 class Command:
     """One CLI command: its handler and how it adds its own arguments."""
@@ -205,6 +302,9 @@ COMMANDS: dict[str, Command] = {
     "validate": Command(_validate, _validate_arguments),
     "anchor": Command(_anchor, _anchor_arguments),
     "apply": Command(_apply, _apply_arguments),
+    "help-agent": Command(_help_agent, _help_agent_arguments),
+    "prompt": Command(_prompt, _prompt_arguments),
+    "schema": Command(_schema, _schema_arguments),
 }
 
 
