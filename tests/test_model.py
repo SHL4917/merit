@@ -26,6 +26,7 @@ from merit.model import (
     Repo,
     Requirement,
     Supersession,
+    confirmation_defect,
     derive_open_issues,
     dump_artefact,
     effective_status,
@@ -51,6 +52,7 @@ def ev(source=TRANSCRIPT, **kw):
 
 def make_issue(id="ISS-0001", status="resolved", resolved_by="DEC-0001", affects=None, **kw):
     return Issue(
+        schema_version=1,
         id=id,
         kind="contradiction",
         summary="Export scope is unclear.",
@@ -67,6 +69,7 @@ def make_issue(id="ISS-0001", status="resolved", resolved_by="DEC-0001", affects
 def make_decision(id="DEC-0001", resolves=None, record_source=NOTE, confirmed_by=None,
                   confirmation_record=None):
     return Decision(
+        schema_version=1,
         id=id,
         resolves=["ISS-0001"] if resolves is None else resolves,
         decided_on=datetime.date(2026, 9, 24),
@@ -81,9 +84,10 @@ def make_decision(id="DEC-0001", resolves=None, record_source=NOTE, confirmed_by
 def make_requirement(id="REQ-SMP-0001", **kw):
     kw.setdefault("status", "baselined")
     kw.setdefault("evidence", [ev()])
+    kw.setdefault("statement", "Audit logs shall be retained for 7 years.")
     return Requirement(
+        schema_version=1,
         id=id,
-        statement="Audit logs shall be retained for 7 years.",
         type="functional",
         provenance="stated",
         acceptance_criteria=["A 7-year-old log entry can be retrieved."],
@@ -97,9 +101,10 @@ def make_repo(issues=(), decisions=(), requirements=(), self_note=True):
         issues={i.id: i for i in issues},
         decisions={d.id: d for d in decisions},
         source_meta={
-            NOTE: {"record_type": "self_recorded_note" if self_note else "transcript"},
+            NOTE: {"record_type": "self_recorded_note" if self_note else "transcript",
+                   "authored_by": "alex"},
             TRANSCRIPT: {"record_type": "transcript"},
-            EMAIL: {"record_type": "email"},
+            EMAIL: {"record_type": "email", "authored_by": "Sam Ellis"},
         },
     )
 
@@ -112,7 +117,7 @@ def test_candidate_has_no_evidence_attribute_at_all():
     assert not hasattr(Candidate, "evidence")
     assert "evidence" not in field_names(Candidate)
     candidate = Candidate(
-        id="CAN-0001", statement="s", rationale="r", raised_by="alex",
+        schema_version=1, id="CAN-0001", statement="s", rationale="r", raised_by="alex",
         raised_on=datetime.date(2026, 10, 18), status="open",
     )
     assert not hasattr(candidate, "evidence")
@@ -122,7 +127,7 @@ def test_an_evidence_bearing_candidate_is_a_structural_error_on_load(tmp_path):
     path = tmp_path / "candidates" / "CAN-0001.yaml"
     path.parent.mkdir()
     path.write_text(
-        "id: CAN-0001\nstatement: s\nrationale: r\nraised_by: alex\n"
+        "schema_version: 1\nid: CAN-0001\nstatement: s\nrationale: r\nraised_by: alex\n"
         "raised_on: 2026-10-18\nstatus: open\nevidence: []\n",
         encoding="utf-8",
     )
@@ -155,7 +160,7 @@ def test_evidence_without_line_loads_as_none(tmp_path):
     path = tmp_path / "requirements" / "REQ-SMP-0001.yaml"
     path.parent.mkdir()
     path.write_text(
-        "id: REQ-SMP-0001\nstatement: s\ntype: functional\nprovenance: stated\n"
+        "schema_version: 1\nid: REQ-SMP-0001\nstatement: s\ntype: functional\nprovenance: stated\n"
         "status: draft\nevidence:\n  - source: sources/a.md\n    quote: kept seven years\n",
         encoding="utf-8",
     )
@@ -171,26 +176,26 @@ def test_evidence_without_line_loads_as_none(tmp_path):
 
 def test_dataclass_field_order_follows_the_spec():
     assert field_names(Requirement) == [
-        "id", "statement", "type", "provenance", "status", "rationale", "evidence",
+        "schema_version", "id", "statement", "type", "provenance", "status", "rationale", "evidence",
         "acceptance_criteria", "owner", "promoted_from", "deferred_reason", "withdrawn_reason",
     ]
     assert field_names(Evidence) == [
         "source", "bundle_sha256", "line", "end_line", "speaker", "quote",
     ]
     assert field_names(Candidate) == [
-        "id", "statement", "rationale", "raised_by", "raised_on", "status",
+        "schema_version", "id", "statement", "rationale", "raised_by", "raised_on", "status",
         "promoted_to", "withdrawn_reason",
     ]
     assert field_names(Issue) == [
-        "id", "kind", "summary", "evidence", "affects", "question", "status", "owner",
+        "schema_version", "id", "kind", "summary", "evidence", "affects", "question", "status", "owner",
         "resolved_by", "dismissed_reason",
     ]
     assert field_names(Decision) == [
-        "id", "resolves", "decided_on", "decided_by", "outcome", "record", "confirmed_by",
+        "schema_version", "id", "resolves", "decided_on", "decided_by", "outcome", "record", "confirmed_by",
         "confirmation_record",
     ]
     assert field_names(Supersession) == [
-        "id", "supersedes", "superseded_by", "reason", "recorded_by", "recorded_on",
+        "schema_version", "id", "supersedes", "superseded_by", "reason", "recorded_by", "recorded_on",
     ]
     assert field_names(Baseline) == [
         "id", "prepared_on", "prepared_by", "governed_tree_hash", "merit_version",
@@ -210,7 +215,11 @@ def test_awaiting_confirmation_is_derived_only_never_in_a_stored_enum():
     }
 
 
-def test_id_patterns_are_ascii_only_and_anchored():
+def test_id_patterns_are_ascii_only_and_anchored_as_the_jsonschema_library_applies_them():
+    # jsonschema applies `pattern` with re.search, where `$` also matches before a
+    # trailing newline. Test through the library itself, not through re.fullmatch.
+    import jsonschema
+
     assert set(ID_PATTERNS) == {"requirement", "candidate", "issue", "decision", "supersession"}
     arabic_indic_four = chr(0x0664)  # a Unicode digit that \d would accept
     good = {
@@ -218,15 +227,21 @@ def test_id_patterns_are_ascii_only_and_anchored():
         "decision": "DEC-0001", "supersession": "SUP-0001",
     }
     for kind, value in good.items():
-        assert re.fullmatch(ID_PATTERNS[kind], value), kind
-        bad = [value + "\n", value + "0", value.lower(), value[:-1] + arabic_indic_four,
-               " " + value]
+        validator = jsonschema.Draft202012Validator({"type": "string", "pattern": ID_PATTERNS[kind]})
+        assert validator.is_valid(value), kind
+        assert re.search(ID_PATTERNS[kind], value), kind
+        bad = [value + "\n", value + "\n\n", value + "0", value.lower(),
+               value[:-1] + arabic_indic_four, " " + value, value + " "]
         for candidate in bad:
-            assert not re.fullmatch(ID_PATTERNS[kind], candidate), (kind, candidate)
-    assert not re.fullmatch(ID_PATTERNS["requirement"], "REQ-S-0001")
-    assert not re.fullmatch(ID_PATTERNS["requirement"], "REQ-SMPLESS-0001")
-    assert re.fullmatch(ID_PATTERNS["requirement"], "REQ-SM-0001")
-    assert re.fullmatch(ID_PATTERNS["requirement"], "REQ-SMPLES-0001")
+            assert not validator.is_valid(candidate), (kind, candidate)
+            assert not re.search(ID_PATTERNS[kind], candidate), (kind, candidate)
+
+    requirement = jsonschema.Draft202012Validator(
+        {"type": "string", "pattern": ID_PATTERNS["requirement"]})
+    assert not requirement.is_valid("REQ-S-0001")
+    assert not requirement.is_valid("REQ-SMPLESS-0001")
+    assert requirement.is_valid("REQ-SM-0001")
+    assert requirement.is_valid("REQ-SMPLES-0001")
 
 
 # ---------------------------------------------------------------------------
@@ -240,21 +255,21 @@ def write_full_repo(root):
         path.write_text(text, encoding="utf-8")
 
     put("requirements/REQ-SMP-0001.yaml",
-        "id: REQ-SMP-0001\nstatement: s\ntype: functional\nprovenance: stated\nstatus: draft\n"
+        "schema_version: 1\nid: REQ-SMP-0001\nstatement: s\ntype: functional\nprovenance: stated\nstatus: draft\n"
         "evidence:\n  - source: sources/2026-09-24-note.md\n    quote: q\n")
     put("candidates/CAN-0001.yaml",
-        "id: CAN-0001\nstatement: s\nrationale: r\nraised_by: alex\nraised_on: 2026-10-18\n"
+        "schema_version: 1\nid: CAN-0001\nstatement: s\nrationale: r\nraised_by: alex\nraised_on: 2026-10-18\n"
         "status: open\n")
     put("issues/ISS-0001.yaml",
-        "id: ISS-0001\nkind: contradiction\nsummary: s\nevidence:\n"
+        "schema_version: 1\nid: ISS-0001\nkind: contradiction\nsummary: s\nevidence:\n"
         "  - {source: sources/2026-09-24-note.md, quote: a}\n"
         "  - {source: sources/2026-09-24-note.md, quote: b}\n"
         "affects: [REQ-SMP-0001]\nquestion: q\nstatus: open\nowner: alex\n")
     put("decisions/DEC-0001.yaml",
-        "id: DEC-0001\nresolves: [ISS-0001]\ndecided_on: 2026-09-24\ndecided_by: Jordan\n"
+        "schema_version: 1\nid: DEC-0001\nresolves: [ISS-0001]\ndecided_on: 2026-09-24\ndecided_by: Jordan\n"
         "outcome: o\nrecord: {source: sources/2026-09-24-note.md, quote: q}\n")
     put("supersessions/SUP-0001.yaml",
-        "id: SUP-0001\nsupersedes: sources/a.md\nsuperseded_by: sources/b.md\nreason: r\n"
+        "schema_version: 1\nid: SUP-0001\nsupersedes: sources/a.md\nsuperseded_by: sources/b.md\nreason: r\n"
         "recorded_by: alex\nrecorded_on: 2026-10-02\n")
     put("baselines/sample-b1.yaml",
         "id: sample-b1\nprepared_on: 2026-10-20\nprepared_by: alex\ngoverned_tree_hash: abc\n"
@@ -325,9 +340,9 @@ def test_a_filename_that_does_not_match_its_id_is_refused_not_silently_overwritt
 def test_load_failures_are_meriterrors_naming_the_file_never_tracebacks(tmp_path):
     (tmp_path / "issues").mkdir()
     cases = {
-        "ISS-0001.yaml": "id: ISS-0001\nsummary: [unclosed\n",
+        "ISS-0001.yaml": "schema_version: 1\nid: ISS-0001\nsummary: [unclosed\n",
         "ISS-0002.yaml": "- just\n- a list\n",
-        "ISS-0003.yaml": "id: ISS-0003\n",  # required fields missing
+        "ISS-0003.yaml": "schema_version: 1\nid: ISS-0003\n",  # required fields missing
         "ISS-0004.yaml": "",
     }
     for name, text in cases.items():
@@ -352,7 +367,7 @@ def test_a_non_list_where_a_list_is_required_is_a_validation_failure(tmp_path):
     path = tmp_path / "issues" / "ISS-0001.yaml"
     path.parent.mkdir()
     path.write_text(
-        "id: ISS-0001\nkind: contradiction\nsummary: s\nevidence: nope\n"
+        "schema_version: 1\nid: ISS-0001\nkind: contradiction\nsummary: s\nevidence: nope\n"
         "affects: REQ-SMP-0001\nquestion: q\nstatus: open\nowner: alex\n", encoding="utf-8")
     with pytest.raises(ValidationFailed):
         load_artefact(path, "issue")
@@ -367,7 +382,7 @@ ALL_SAMPLES = {
     "requirement": lambda: make_requirement(rationale="why", owner="ops-lead",
                                             promoted_from="CAN-0002"),
     "candidate": lambda: Candidate(
-        id="CAN-0002", statement="Offer a dark theme.", rationale="Raised in passing.",
+        schema_version=1, id="CAN-0002", statement="Offer a dark theme.", rationale="Raised in passing.",
         raised_by="alex", raised_on=datetime.date(2026, 10, 18), status="promoted",
         promoted_to="REQ-SMP-0021"),
     "issue": lambda: make_issue(),
@@ -375,7 +390,8 @@ ALL_SAMPLES = {
         confirmed_by="Sam Ellis",
         confirmation_record=ev(EMAIL, bundle_sha256="b19d", line=4, speaker="Sam Ellis")),
     "supersession": lambda: Supersession(
-        id="SUP-0001", supersedes="sources/a.md", superseded_by="sources/b.md", reason="r",
+        schema_version=1, id="SUP-0001", supersedes="sources/a.md", superseded_by="sources/b.md",
+        reason="r",
         recorded_by="alex", recorded_on=datetime.date(2026, 10, 2)),
     "baseline": lambda: Baseline(
         id="sample-b1", prepared_on=datetime.date(2026, 10, 20), prepared_by="alex",
@@ -404,7 +420,7 @@ def test_save_then_load_round_trips_every_kind_and_the_bytes_are_stable(tmp_path
 def test_save_uses_dataclass_field_order_never_sorted_keys():
     text = dump_artefact(make_requirement()).decode("utf-8")
     keys = re.findall(r"^([a-z_]+):", text, flags=re.M)
-    assert keys == ["id", "statement", "type", "provenance", "status", "evidence",
+    assert keys == ["schema_version", "id", "statement", "type", "provenance", "status", "evidence",
                     "acceptance_criteria"]
     assert keys != sorted(keys)  # 'acceptance_criteria' sorts before 'evidence'
 
@@ -670,3 +686,226 @@ def test_derive_open_issues_matches_effective_status_for_every_issue():
 
 def test_blocking_statuses_are_open_and_awaiting_confirmation():
     assert set(model.BLOCKING_STATUSES) == {"open", "awaiting_confirmation"}
+
+
+# ---------------------------------------------------------------------------
+# resolved_by is the pointer: scanning decision.resolves instead must fail
+# ---------------------------------------------------------------------------
+
+def test_a_nonexistent_resolved_by_is_open_even_if_another_confirmed_decision_lists_the_issue():
+    confirmed_elsewhere = make_decision(id="DEC-0002", resolves=["ISS-0001"],
+                                        record_source=TRANSCRIPT)
+    issue = make_issue(resolved_by="DEC-9999")
+    repo = make_repo(issues=[issue], decisions=[confirmed_elsewhere])
+    assert effective_status(issue, repo) == "open"
+    assert derive_open_issues(make_requirement(), repo) == ["ISS-0001"]
+
+
+def test_a_resolved_by_naming_a_non_listing_decision_is_open_even_if_another_lists_the_issue():
+    not_listing = make_decision(id="DEC-0001", resolves=["ISS-0099"], record_source=TRANSCRIPT)
+    listing_and_confirmed = make_decision(id="DEC-0002", resolves=["ISS-0001"],
+                                          record_source=TRANSCRIPT)
+    issue = make_issue(resolved_by="DEC-0001")
+    repo = make_repo(issues=[issue], decisions=[not_listing, listing_and_confirmed])
+    assert effective_status(issue, repo) == "open"
+
+
+def test_the_masking_check_holds_in_either_insertion_order():
+    provisional = make_decision(id="DEC-0001", resolves=["ISS-0001"], record_source=NOTE)
+    confirmed = make_decision(id="DEC-0002", resolves=["ISS-0001"], record_source=TRANSCRIPT)
+    issue = make_issue(resolved_by="DEC-0001")
+    for decisions in ([provisional, confirmed], [confirmed, provisional]):
+        repo = make_repo(issues=[issue], decisions=decisions)
+        assert effective_status(issue, repo) == "awaiting_confirmation"
+    # and the other way round: the cited decision is the confirmed one
+    issue2 = make_issue(resolved_by="DEC-0002")
+    for decisions in ([provisional, confirmed], [confirmed, provisional]):
+        repo = make_repo(issues=[issue2], decisions=decisions)
+        assert effective_status(issue2, repo) == "resolved"
+
+
+# ---------------------------------------------------------------------------
+# schema_version is required on every artefact and leads the key order
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("kind", ["requirement", "candidate", "issue", "decision", "supersession"])
+def test_schema_version_is_a_required_first_key_on_every_artefact(tmp_path, kind):
+    artefact = ALL_SAMPLES[kind]()
+    assert field_names(type(artefact))[0] == "schema_version"
+    assert artefact.schema_version == 1
+    text = dump_artefact(artefact).decode("utf-8")
+    assert text.startswith("schema_version: 1\nid: " + artefact.id + "\n")
+
+    path = tmp_path / f"{artefact.id}.yaml"
+    path.write_text(
+        "".join(line for line in text.splitlines(keepends=True)
+                if not line.startswith("schema_version:")),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValidationFailed) as exc:
+        load_artefact(path, kind)
+    assert "schema_version" in str(exc.value)
+
+
+def test_baseline_keeps_schema_version_where_the_spec_puts_it():
+    text = dump_artefact(ALL_SAMPLES["baseline"]()).decode("utf-8")
+    keys = re.findall(r"^([a-z_]+):", text, flags=re.M)
+    assert keys == ["id", "prepared_on", "prepared_by", "governed_tree_hash", "merit_version",
+                    "schema_version", "requirements", "deferred", "open_issues"]
+
+
+# ---------------------------------------------------------------------------
+# confirmation_defect: the shared D20/V9 metadata rule behind is_provisional
+# ---------------------------------------------------------------------------
+
+def confirmed_by_sam(record_source=NOTE, confirmation=None, confirmed_by="Sam Ellis"):
+    return make_decision(
+        record_source=record_source, confirmed_by=confirmed_by,
+        confirmation_record=confirmation if confirmation is not None else ev(EMAIL, speaker="Sam Ellis"))
+
+
+def test_a_note_confirmed_by_a_note_stays_awaiting_confirmation():
+    for confirming_source in (NOTE, "sources/2026-09-26-other-note.md"):
+        repo = make_repo()
+        repo.source_meta["sources/2026-09-26-other-note.md"] = {
+            "record_type": "self_recorded_note", "authored_by": "Sam Ellis"}
+        decision = confirmed_by_sam(confirmation=ev(confirming_source, speaker="Sam Ellis"))
+        issue = make_issue()
+        repo.issues = {issue.id: issue}
+        repo.decisions = {decision.id: decision}
+        assert confirmation_defect(decision, repo) is not None
+        assert "self-recorded note" in confirmation_defect(decision, repo)
+        assert is_provisional(decision, repo) is True
+        assert effective_status(issue, repo) == "awaiting_confirmation"
+
+
+def test_a_confirmation_by_someone_other_than_confirmed_by_does_not_confirm():
+    decision = confirmed_by_sam(confirmation=ev(EMAIL, speaker="Somebody Else"))
+    repo = make_repo()
+    repo.source_meta[EMAIL]["authored_by"] = "Somebody Else"
+    assert confirmation_defect(decision, repo) is not None
+    assert is_provisional(decision, repo) is True
+
+
+def test_authored_by_can_stand_in_for_a_missing_speaker():
+    decision = confirmed_by_sam(confirmation=ev(EMAIL))  # no speaker, source authored by Sam
+    repo = make_repo()
+    assert confirmation_defect(decision, repo) is None
+    assert is_provisional(decision, repo) is False
+
+
+def test_the_speaker_can_stand_in_for_a_missing_authored_by():
+    decision = confirmed_by_sam(confirmation=ev(EMAIL, speaker="Sam Ellis"))
+    repo = make_repo()
+    del repo.source_meta[EMAIL]["authored_by"]
+    assert confirmation_defect(decision, repo) is None
+
+
+def test_a_confirmation_authored_by_the_note_author_is_self_confirmation():
+    # The speaker line names Sam, but the file was written by the note's own author.
+    decision = confirmed_by_sam(confirmation=ev(EMAIL, speaker="Sam Ellis"))
+    repo = make_repo()
+    repo.source_meta[EMAIL]["authored_by"] = "alex"  # same as the note's authored_by
+    assert "note's own author" in confirmation_defect(decision, repo)
+    assert is_provisional(decision, repo) is True
+
+
+def test_a_confirmation_from_an_unknown_source_is_a_defect():
+    decision = confirmed_by_sam(confirmation=ev("sources/nowhere.md", speaker="Sam Ellis"))
+    assert "no known record_type" in confirmation_defect(decision, make_repo())
+    assert is_provisional(decision, make_repo()) is True
+
+
+def test_confirmation_defect_is_none_for_a_valid_confirmation_and_for_no_claim():
+    assert confirmation_defect(confirmed_by_sam(), make_repo()) is None
+    assert confirmation_defect(make_decision(record_source=NOTE), make_repo()) is None
+    bare = make_decision(record_source=NOTE, confirmed_by="Sam Ellis")
+    assert "no confirmation_record" in confirmation_defect(bare, make_repo())
+
+
+def test_confirmation_defect_reads_metadata_only_so_it_needs_no_filesystem_or_source_text():
+    # repo.root is None and no source text exists anywhere: it still decides.
+    repo = make_repo()
+    assert repo.root is None
+    assert confirmation_defect(confirmed_by_sam(), repo) is None
+
+
+def test_a_defective_confirmation_does_not_unblock_a_transcript_basis_either_way():
+    # A transcript basis is not provisional whatever the confirmation says (V9 reports the defect).
+    decision = confirmed_by_sam(record_source=TRANSCRIPT,
+                                confirmation=ev(NOTE, speaker="Sam Ellis"))
+    repo = make_repo()
+    assert confirmation_defect(decision, repo) is not None
+    assert is_provisional(decision, repo) is False
+
+
+# ---------------------------------------------------------------------------
+# Hostile structure must not crash the display path
+# ---------------------------------------------------------------------------
+
+def test_a_required_nested_object_set_to_null_is_a_validation_failure(tmp_path):
+    path = tmp_path / "decisions" / "DEC-0001.yaml"
+    path.parent.mkdir()
+    path.write_text(
+        "schema_version: 1\nid: DEC-0001\nresolves: [ISS-0001]\ndecided_on: 2026-09-24\n"
+        "decided_by: Jordan\noutcome: o\nrecord: ~\n", encoding="utf-8")
+    with pytest.raises(ValidationFailed) as exc:
+        load_artefact(path, "decision")
+    assert "record" in str(exc.value)
+    assert "DEC-0001.yaml" in str(exc.value)
+
+
+def test_an_optional_nested_object_may_be_null(tmp_path):
+    path = tmp_path / "decisions" / "DEC-0001.yaml"
+    path.parent.mkdir()
+    path.write_text(
+        "schema_version: 1\nid: DEC-0001\nresolves: [ISS-0001]\ndecided_on: 2026-09-24\n"
+        "decided_by: Jordan\noutcome: o\nrecord: {source: sources/a.md, quote: q}\n"
+        "confirmation_record: ~\n", encoding="utf-8")
+    assert load_artefact(path, "decision").confirmation_record is None
+
+
+def test_an_unhashable_source_is_unclassifiable_not_a_crash():
+    decision = make_decision()
+    decision.record.source = ["not", "a", "path"]
+    assert is_provisional(decision, make_repo()) is True
+    decision = confirmed_by_sam()
+    decision.confirmation_record.source = {"x": 1}
+    assert confirmation_defect(decision, make_repo()) is not None
+
+
+# ---------------------------------------------------------------------------
+# Quotes are the core datum: YAML must never read them back as another type
+# ---------------------------------------------------------------------------
+
+YAML_FOOTGUN_TEXTS = [
+    "yes", "no", "on", "off", "true", "false", "y", "n", "null", "Null", "~", "",
+    "2026-09-12", "2026-09-12T10:30:00", "12:30", "1", "0", "1.5", "1e3", ".inf", "0x1F",
+    "0o17", "- a dash", "# not a comment", "key: value", "[a, b]", "{a: b}", "'quoted'",
+    '"double"', "& anchor", "* alias", "! tag", "@at", "`tick", "%percent", "|", ">",
+    " leading space", "trailing space ", "line one\nline two", "line one\n\nline three\n",
+    "tab\there", "colon: and # hash", "100%", "a: b: c",
+]
+
+
+@pytest.mark.parametrize("text", YAML_FOOTGUN_TEXTS)
+def test_quotes_and_statements_round_trip_as_the_same_string(tmp_path, text):
+    requirement = make_requirement(
+        statement=text, evidence=[ev(quote=text, speaker=text or "x")])
+    path = tmp_path / "REQ-SMP-0001.yaml"
+    save_artefact(requirement, path)
+    loaded = load_artefact(path, "requirement")
+    assert loaded.evidence[0].quote == text
+    assert type(loaded.evidence[0].quote) is str
+    assert loaded.statement == text and type(loaded.statement) is str
+    assert loaded == requirement
+    save_artefact(loaded, tmp_path / "again.yaml")  # and the bytes are stable
+    assert (tmp_path / "again.yaml").read_bytes() == path.read_bytes()
+
+
+def test_a_quote_with_non_ascii_text_round_trips(tmp_path):
+    text = "caf" + chr(0xE9) + " " + chr(0x201C) + "quoted" + chr(0x201D) + " " + chr(0x4E2D)
+    requirement = make_requirement(evidence=[ev(quote=text)])
+    path = tmp_path / "REQ-SMP-0001.yaml"
+    save_artefact(requirement, path)
+    assert load_artefact(path, "requirement").evidence[0].quote == text

@@ -70,12 +70,15 @@ BLOCKING_STATUSES = ("open", AWAITING_CONFIRMATION)
 SELF_RECORDED_NOTE = "self_recorded_note"
 
 # ASCII digits via [0-9]: \d matches non-ASCII digits (found in Task 4's review).
+# Anchored with \Z, not $: the python jsonschema library applies `pattern` with
+# re.search, where $ also matches before a trailing newline, so "REQ-SMP-0001<newline>"
+# would pass. (\Z is Python regex; this tool validates only with python jsonschema.)
 ID_PATTERNS: dict[str, str] = {
-    "requirement": "^REQ-[A-Z]{2,6}-[0-9]{4}$",
-    "candidate": "^CAN-[0-9]{4}$",
-    "issue": "^ISS-[0-9]{4}$",
-    "decision": "^DEC-[0-9]{4}$",
-    "supersession": "^SUP-[0-9]{4}$",
+    "requirement": r"^REQ-[A-Z]{2,6}-[0-9]{4}\Z",
+    "candidate": r"^CAN-[0-9]{4}\Z",
+    "issue": r"^ISS-[0-9]{4}\Z",
+    "decision": r"^DEC-[0-9]{4}\Z",
+    "supersession": r"^SUP-[0-9]{4}\Z",
 }
 
 # A date as YAML gives it (2026-10-18 loads as a date) or, if quoted, a string.
@@ -120,6 +123,7 @@ class Evidence:
 @dataclass(kw_only=True)
 class Requirement:
     # No `open_issues`: it is derived from the issue files (derive_open_issues).
+    schema_version: int
     id: str
     statement: str
     type: str
@@ -138,6 +142,7 @@ class Requirement:
 class Candidate:
     # No `evidence`, not even an empty one: an evidence-bearing candidate is a
     # structural error, which keeps "every requirement traces to evidence" true.
+    schema_version: int
     id: str
     statement: str
     rationale: str
@@ -150,6 +155,7 @@ class Candidate:
 
 @dataclass(kw_only=True)
 class Issue:
+    schema_version: int
     id: str
     kind: str
     summary: str
@@ -164,6 +170,7 @@ class Issue:
 
 @dataclass(kw_only=True)
 class Decision:
+    schema_version: int
     id: str
     resolves: list[str] = _list_field()
     decided_on: Date
@@ -176,6 +183,7 @@ class Decision:
 
 @dataclass(kw_only=True)
 class Supersession:
+    schema_version: int
     id: str
     supersedes: str
     superseded_by: str
@@ -220,15 +228,6 @@ ARTEFACT_CLASSES: dict[str, type] = {
 
 # kind -> directory under the repo root.
 ARTEFACT_DIRS: dict[str, str] = {
-    "requirement": "requirements",
-    "candidate": "candidates",
-    "issue": "issues",
-    "decision": "decisions",
-    "supersession": "supersessions",
-    "baseline": "baselines",
-}
-
-_REPO_ATTRS: dict[str, str] = {
     "requirement": "requirements",
     "candidate": "candidates",
     "issue": "issues",
@@ -294,8 +293,12 @@ def _build(cls: type, data: Any, path: Path | str, loc: str) -> Any:
                 raise _fail(path, f"{here}: expected a list, found {type(value).__name__}")
             if of is not None:
                 value = [_build(of, item, path, f"{here}[{i}]") for i, item in enumerate(value)]
-        elif of is not None and value is not None:
-            value = _build(of, value, path, here)
+        elif of is not None:
+            if value is None:
+                if fields[name].default is dataclasses.MISSING:
+                    raise _fail(path, f"{here}: required, but is empty")
+            else:
+                value = _build(of, value, path, here)
         kwargs[name] = value
     return cls(**kwargs)
 
@@ -334,7 +337,7 @@ def load_repo(root: Path | str) -> Repo:
         directory = root / dirname
         if not directory.is_dir():
             continue
-        target = getattr(repo, _REPO_ATTRS[kind])
+        target = getattr(repo, dirname)  # Repo attributes are named after the directories
         for path in sorted(directory.glob("*.yaml")):
             if not path.is_file():
                 continue
@@ -411,26 +414,82 @@ def save_artefact(artefact: Any, path: Path | str) -> None:
 # Derived status: computed on read, never stored.
 # ---------------------------------------------------------------------------
 
-def _is_confirmed(decision: Decision) -> bool:
-    # D20: a bare name is self-attestation. Confirmation needs an anchored record.
-    name = decision.confirmed_by
-    return (
-        isinstance(name, str)
-        and name.strip() != ""
-        and decision.confirmation_record is not None
-    )
+def _record_type(source: Any, repo: Repo) -> str | None:
+    meta = repo.source_meta.get(source) if isinstance(source, str) else None
+    value = meta.get("record_type") if isinstance(meta, dict) else None
+    return value if isinstance(value, str) and value else None
+
+
+def _authored_by(source: Any, repo: Repo) -> str | None:
+    meta = repo.source_meta.get(source) if isinstance(source, str) else None
+    value = meta.get("authored_by") if isinstance(meta, dict) else None
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _named(value: Any) -> str | None:
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def confirmation_defect(decision: Decision, repo: Repo) -> str | None:
+    """Why this decision's confirmation does not count, or ``None`` if it does.
+
+    The single implementation of the *metadata* conditions D20 and V9 place on a
+    confirmation. ``is_provisional`` treats a defect as "not confirmed"; check V9
+    turns the same non-``None`` reason into a finding. One rule, two consumers,
+    so the display and the validator cannot disagree.
+
+    A decision that names no ``confirmed_by`` makes no confirmation claim and has
+    no defect (it is simply unconfirmed). Otherwise all of these must hold:
+
+    * a ``confirmation_record`` exists (a bare name is self-attestation);
+    * its source has a known ``record_type`` that is not ``self_recorded_note``;
+    * its ``speaker``, or its source's ``authored_by``, equals ``confirmed_by``;
+    * when the decision's own record is a self-recorded note, the confirmation
+      source is not authored by that note's ``authored_by`` (no self-confirmation).
+
+    Deliberate boundary: anchoring validity is V9's alone, through ``anchor``.
+    This function reads sidecar metadata only. It never reads source text or
+    checks that a quote exists, because it runs once per issue on every display
+    path; a fabricated confirmation quote surfaces through the report's R1
+    blocker summary, which comes from the check run, not from here.
+    """
+    name = _named(decision.confirmed_by)
+    if name is None:
+        return None
+    record = decision.confirmation_record
+    if record is None:
+        return "confirmed_by is set but there is no confirmation_record"
+    source = record.source
+    record_type = _record_type(source, repo)
+    if record_type is None:
+        return "the confirmation_record source has no known record_type"
+    if record_type == SELF_RECORDED_NOTE:
+        return "the confirmation_record is itself a self-recorded note"
+    confirmer_authored = _authored_by(source, repo)
+    if _named(record.speaker) != name and confirmer_authored != name:
+        return "neither the confirmation_record speaker nor its source author is confirmed_by"
+    if _record_type(decision.record.source, repo) == SELF_RECORDED_NOTE:
+        note_author = _authored_by(decision.record.source, repo)
+        if note_author is not None and confirmer_authored == note_author:
+            return "the confirmation_record is authored by the note's own author"
+    return None
+
+
+def is_confirmed(decision: Decision, repo: Repo) -> bool:
+    return _named(decision.confirmed_by) is not None and confirmation_defect(decision, repo) is None
 
 
 def is_provisional(decision: Decision, repo: Repo) -> bool:
     """True when the decision rests on a self-recorded note nobody has confirmed.
 
-    Fails closed: a record source with no readable ``record_type`` cannot be
-    shown to be anything but unverified, so it counts as provisional.
+    Confirmed means ``is_confirmed``: ``confirmed_by`` is set and
+    ``confirmation_defect`` is ``None``. Fails closed: a record source with no
+    readable ``record_type`` cannot be shown to be anything but unverified, so
+    it counts as provisional. Reads sidecar metadata only, never source text.
     """
-    meta = repo.source_meta.get(decision.record.source)
-    record_type = meta.get("record_type") if isinstance(meta, dict) else None
-    unverified_basis = not isinstance(record_type, str) or record_type in ("", SELF_RECORDED_NOTE)
-    return unverified_basis and not _is_confirmed(decision)
+    record_type = _record_type(decision.record.source, repo)
+    unverified_basis = record_type is None or record_type == SELF_RECORDED_NOTE
+    return unverified_basis and not is_confirmed(decision, repo)
 
 
 def effective_status(issue: Issue, repo: Repo) -> str:
