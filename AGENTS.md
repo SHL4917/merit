@@ -26,6 +26,11 @@ This is the tool repository. It holds no requirements data. Design: `docs/superp
 - `merit apply` is the only write path for governed artefacts. `merit ingest` is the single narrow, create-only exception and owns `sources/`.
 - A provisional decision is a valid state: V9 permits a self-recorded note with no `confirmed_by`, and V8 blocks it from a baseline.
 - A confirmation requires anchored evidence, not a name.
+- V1 integrity, V2 immutability, V3 structure, V4 IDs, V5 anchors, V6 provenance/status, V7 issues, V8 derived issue blocks, V9 decisions, V10 readiness, V11 supersession, V12 re-extraction each keep their own check ID.
+- V9 calls `model.confirmation_defect` for D20 metadata; both decision records pass through `anchor_evidence` in V5 and V9. Display predicates read metadata only; anchoring belongs to validation.
+- Python `re` and ECMA-262 regex syntax differ: Python `$` admits a trailing newline and `\Z` is invalid under ECMA Unicode mode. Share the portable strict lookahead in `ID_PATTERNS`, never substitute either anchor.
+- V11 reads `supersessions/`, never mutable source metadata. Non-baselined citations are advisory; baselined citations are errors. `baseline_blockers` returns all errors, never advisories.
+- Raw validation order is V3, V1, V4 before the model gate; all remaining checks require safe models. Context/history reads use the real repository even when artefacts are staged.
 - All file I/O is explicitly UTF-8 (`encoding="utf-8"`). Never create a symlink: the target is Windows. Use `pathlib`.
 
 ## Non-obvious placement

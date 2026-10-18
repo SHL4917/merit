@@ -12,6 +12,7 @@ import yaml
 
 import merit
 from merit import git_ops
+from merit import model
 from merit.errors import MeritError
 from merit.anchor import anchor_evidence, evidence_fields
 from merit.errors import AnchorError
@@ -20,6 +21,78 @@ from merit.ingest.bundle import bundle_sha256
 from merit.ingest.canonical import normalise_text, sha256_bytes, sha256_text
 from merit.model import ARTEFACT_DIRS, ID_PATTERNS, derive_open_issues, effective_status
 from merit.validate.runner import Finding, register
+
+
+@register("V9")
+def decision_rules(context):
+    findings = []
+    for decision in context.repo.decisions.values():
+        path = context.artefact_root / "decisions" / (decision.id + ".yaml")
+
+        def fail(message):
+            findings.append(Finding("V9", path, message,
+                                    f"correct the decision evidence in {path}, then run: merit validate"))
+
+        if not decision.resolves or any(identity not in context.repo.issues for identity in decision.resolves):
+            fail("resolves must name at least one existing issue and no unknown issues")
+        if not str(decision.decided_on).strip() or not decision.decided_by.strip():
+            fail("decided_on and decided_by are required")
+        if decision.record is None:
+            fail("decision requires a record")
+        for location, evidence in evidence_fields(decision):
+            try:
+                anchor_evidence(evidence, context.artefact_root)
+                if any(getattr(evidence, field) is None
+                       for field in ("line", "speaker", "bundle_sha256")):
+                    raise AnchorError("record is not anchored", fix=f"merit anchor {path}")
+            except AnchorError as exc:
+                fail(f"{location}: {exc}")
+        defect = model.confirmation_defect(decision, context.repo)
+        if defect is not None:
+            fail(defect)
+    return findings
+
+
+@register("V10")
+def readiness(context):
+    findings = []
+    for requirement in context.repo.requirements.values():
+        problem = None
+        if requirement.status == "deferred" and not (requirement.deferred_reason or "").strip():
+            problem = "deferred requirement requires deferred_reason"
+        if requirement.status == "baselined" and not requirement.acceptance_criteria:
+            problem = "baselined requirement requires acceptance_criteria"
+        if problem:
+            path = context.artefact_root / "requirements" / (requirement.id + ".yaml")
+            findings.append(Finding("V10", path, problem,
+                                    f"complete readiness fields in {path}, then run: merit validate"))
+    return findings
+
+
+@register("V11")
+def superseded_evidence(context):
+    superseded = {record.supersedes for record in context.repo.supersessions.values()}
+    findings = []
+    for requirement in context.repo.requirements.values():
+        sources = sorted({evidence.source for evidence in requirement.evidence} & superseded)
+        if sources:
+            path = context.artefact_root / "requirements" / (requirement.id + ".yaml")
+            findings.append(Finding("V11", path,
+                                    "requirement cites superseded source(s): " + ", ".join(sources),
+                                    f"review replacement sources and update {path} through merit apply",
+                                    "error" if requirement.status == "baselined" else "advisory"))
+    return findings
+
+
+def baseline_blockers(repo):
+    """Return every error finding from a complete run; advisories never block.
+
+    ``repo`` is the repository path, so malformed artefacts and source integrity
+    errors participate just as they do in validation.
+    """
+    from merit.validate.runner import run_checks
+
+    return [finding for finding in run_checks(repo) if finding.severity == "error"]
 
 
 @register("V4")

@@ -37,7 +37,8 @@ def project(tmp_path):
     note = source("note", "self_recorded_note", "Alex", "Keep logs for a year.")
     confirmation = source("confirmation", "transcript", "Jordan", "I confirm a year.")
     req = dict(schema_version=1, id="REQ-SMP-0001", statement="Keep logs", type="functional",
-               provenance="stated", status="draft", evidence=[first])
+               provenance="stated", status="draft", evidence=[first],
+               acceptance_criteria=["Logs are retained"])
     issue = dict(schema_version=1, id="ISS-0001", kind="contradiction", summary="Log retention",
                  evidence=[first, second], affects=[req["id"]], question="How long?",
                  status="open", owner="Alex")
@@ -96,8 +97,12 @@ def test_baseline_uses_effective_status(project, mode, blocked, status):
     save(root, "issues", issue)
     findings = run_checks(root)
     expected = blocked and status == "baselined"
-    assert {f.check_id for f in findings} == ({"V8"} if expected else set())
+    ids = {"V8"} if expected else set()
+    if mode in ("bare_name", "self_confirmation"):
+        ids.add("V9")
+    assert {f.check_id for f in findings} == ids
     if expected:
+        findings = [f for f in findings if f.check_id == "V8"]
         assert all(f.path.name == req["id"] + ".yaml" and "ISS-0001" in f.message
                    and f.fix for f in findings)
         if mode not in ("open",):
@@ -118,7 +123,8 @@ def test_dangling_or_unrelated_resolution_fails_closed(project, pointer):
     save(root, "requirements", req)
     save(root, "issues", issue)
     findings = run_checks(root)
-    assert {f.check_id for f in findings} == {"V7", "V8"}
+    ids = {"V7", "V8", "V9"} if pointer == "DEC-0001" else {"V7", "V8"}
+    assert {f.check_id for f in findings} == ids
 
 
 def test_missing_directories_and_structural_gate(project):

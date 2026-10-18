@@ -149,7 +149,9 @@ def test_decision_evidence_is_v5(anchored_repo, field):
     setattr(decision, field, dataclasses.replace(good, quote="Invented"))
     path = root / "decisions" / "DEC-0001.yaml"
     save_artefact(decision, path)
-    finding, = run_checks(root)
+    findings = run_checks(root)
+    assert {f.check_id for f in findings} == {"V5", "V9"}
+    finding, = [f for f in findings if f.check_id == "V5"]
     assert finding.check_id == "V5" and finding.path == path and field in finding.message
 
 

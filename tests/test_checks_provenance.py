@@ -49,7 +49,8 @@ def test_requirement_conditions_are_v6(project, changes, field):
     requirement.update(changes)
     save(root, "requirements", requirement)
     findings = run_checks(root)
-    assert findings and {f.check_id for f in findings} == {"V6"}
+    expected = {"V6", "V10"} if changes.get("status") == "deferred" else {"V6"}
+    assert findings and {f.check_id for f in findings} == expected
     assert any(field in f.message for f in findings)
     assert all(f.path.name == "REQ-SMP-0001.yaml" and f.fix for f in findings)
 
@@ -60,6 +61,8 @@ def test_requirement_conditions_are_v6(project, changes, field):
 def test_valid_requirements_and_v10_boundary(project, status, reason, provenance):
     root, requirement = project
     requirement.update(status=status, provenance=provenance, rationale="Derived from the quote")
+    if status == "baselined":
+        requirement["acceptance_criteria"] = ["Audit logs are retained"]
     if reason:
         requirement[status + "_reason"] = reason
     save(root, "requirements", requirement)
