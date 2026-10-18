@@ -49,6 +49,31 @@ def test_url_encodes_tag_as_one_query_value():
     }
 
 
+@pytest.mark.parametrize("commit_sha", [None, "a" * 40])
+@pytest.mark.parametrize("manifest_id", [
+    "sample`[click](https://example.invalid)",
+    "sample``[click](https://example.invalid)`",
+    "sample`\n\n[click](https://example.invalid)\r\n`",
+])
+def test_display_tag_cannot_break_out_of_code_span(manifest_id, commit_sha):
+    block = handoff_block(manifest_id, commit_sha)
+    # A longer delimiter keeps every attacker-controlled backtick inside code.
+    # Newlines are shown visibly, so they cannot end a paragraph/code span.
+    visible_id = manifest_id.replace("\r", "\\r").replace("\n", "\\n")
+    fence = "`" * (max(map(len, re.findall(r"`+", manifest_id))) + 1)
+    display = f"{fence} baseline/{visible_id} {fence}"
+    assert block.startswith(f"Baseline tag: {display}\n\n")
+    assert block.count(display) == (1 if commit_sha else 2)
+    assert "\n\n[click]" not in block
+    outside_code = re.sub(r"(?<!`)(`+)(?!`)(.*?)\1(?!`)", "", block)
+    assert "[click]" not in outside_code
+    if commit_sha:
+        url = re.search(r"\]\((releases/new\?[^)]+)\)", block).group(1)
+        assert parse_qs(urlsplit(url).query) == {
+            "tag": ["baseline/" + manifest_id], "target": [commit_sha]
+        }
+
+
 def test_formatting_has_no_filesystem_or_git_side_effects(tmp_path, monkeypatch):
     import subprocess
 
