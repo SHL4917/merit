@@ -21,6 +21,21 @@ def test_exit_code_values_are_the_contract():
     ]
 
 
+def test_command_configure_adds_its_own_arguments(monkeypatch):
+    seen = []
+    monkeypatch.setitem(
+        cli.COMMANDS,
+        "greet",
+        cli.Command(
+            lambda args: seen.append(args.name),
+            lambda parser: parser.add_argument("--name", required=True),
+        ),
+    )
+    assert cli.main(["greet", "--name", "ada"]) == 0
+    assert seen == ["ada"]
+    assert cli.main(["greet"]) == 2
+
+
 @pytest.mark.parametrize(
     "error_class, expected",
     [
@@ -55,7 +70,7 @@ def test_help_exits_0(capsys):
 
 def test_registered_command_runs_and_returns_its_status(monkeypatch):
     seen = []
-    monkeypatch.setitem(cli.COMMANDS, "ok", lambda args: seen.append(args.command))
+    monkeypatch.setitem(cli.COMMANDS, "ok", cli.Command(lambda args: seen.append(args.command)))
     assert cli.main(["ok"]) == 0
     assert seen == ["ok"]
 
@@ -73,7 +88,7 @@ def test_raised_merit_error_maps_to_its_exit_code(monkeypatch, error_class, expe
     def boom(args):
         raise error_class("it broke", fix="merit do-the-thing")
 
-    monkeypatch.setitem(cli.COMMANDS, "boom", boom)
+    monkeypatch.setitem(cli.COMMANDS, "boom", cli.Command(boom))
     assert cli.main(["boom"]) == expected
 
 
@@ -83,7 +98,7 @@ def test_stderr_carries_the_fix_string_verbatim(monkeypatch, capsys):
     def boom(args):
         raise ValidationFailed("V3 violated", fix=fix)
 
-    monkeypatch.setitem(cli.COMMANDS, "boom", boom)
+    monkeypatch.setitem(cli.COMMANDS, "boom", cli.Command(boom))
     assert cli.main(["boom"]) == 1
     captured = capsys.readouterr()
     assert fix in captured.err

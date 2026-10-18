@@ -100,6 +100,33 @@ def test_missing_artefact_directories_are_not_a_problem(repo):
     assert errors(doctor(repo)) == []
 
 
+def test_git_failure_is_an_error_finding_not_a_crash(repo):
+    shutil.rmtree(repo / ".git")
+    (repo / ".git").write_text("nonsense\n", encoding="utf-8")  # a .git file pointing nowhere
+    assert any("git could not read" in f and "Fix:" in f for f in errors(doctor(repo)))
+
+
+def test_dubious_ownership_fix_is_a_quoted_safe_directory_command(tmp_path, monkeypatch):
+    target = tmp_path / "my project"
+    init(target, project_id="sample", id_prefix="SMP")
+
+    def refuse(*args, **kwargs):
+        raise subprocess.CalledProcessError(
+            128, args[0], stderr=b"fatal: detected dubious ownership in repository at 'x'"
+        )
+
+    monkeypatch.setattr(doctor_module.subprocess, "run", refuse)
+    (finding,) = [f for f in errors(doctor(target)) if "dubious ownership" in f]
+    assert f'git config --global --add safe.directory "{target}"' in finding
+
+
+def test_not_a_git_repo_fix_quotes_a_path_with_spaces(tmp_path):
+    target = tmp_path / "my project"
+    init(target, project_id="sample", id_prefix="SMP")
+    shutil.rmtree(target / ".git")
+    assert any(f'git -C "{target}" init' in f for f in errors(doctor(target)))
+
+
 def test_cli_doctor_exits_0_when_there_are_only_warnings(repo, monkeypatch, capsys):
     without(monkeypatch, "gh")
     assert cli.main(["doctor", str(repo)]) == 0

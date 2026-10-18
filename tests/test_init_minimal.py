@@ -4,7 +4,7 @@ import subprocess
 import pytest
 
 import merit
-from merit import cli
+from merit import cli, scaffold
 from merit.config import find_repo_root, load_config
 from merit.errors import EnvironmentError_, ExitCode, UsageError
 from merit.scaffold import init
@@ -53,16 +53,114 @@ def test_agents_md_carries_the_bootstrap_rules(repo):
     assert "highest classification" in text
 
 
-def test_gitignore_excludes_proposals(repo):
-    lines = (repo / ".gitignore").read_text(encoding="utf-8").splitlines()
-    assert "proposals/" in lines
+def git(repo, *args, check=True):
+    return subprocess.run(
+        ["git", *args], cwd=repo, check=check, capture_output=True, text=True, encoding="utf-8"
+    )
 
 
-def test_gitattributes_never_normalises_retained_originals(repo):
-    lines = (repo / ".gitattributes").read_text(encoding="utf-8").splitlines()
-    assert "sources/raw/** -text" in lines
-    # origin_sha256 hashes raw bytes; the reason belongs next to the rule.
-    assert any(line.startswith("#") and "origin_sha256" in line for line in lines)
+def test_git_ignores_proposals(repo):
+    # Ask git, not the file: a rule that looks right but does nothing is the failure.
+    assert git(repo, "check-ignore", "-q", "proposals/x", check=False).returncode == 0
+    other = git(repo, "check-ignore", "-q", "requirements/REQ-SMP-0001.yaml", check=False)
+    assert other.returncode == 1
+
+
+def test_git_never_normalises_retained_originals(repo):
+    # origin_sha256 hashes raw bytes; if git rewrites line endings on checkout,
+    # a fresh clone fails source verification for a file nobody edited.
+    raw = git(repo, "check-attr", "text", "sources/raw/a.vtt").stdout.strip()
+    assert raw.endswith("text: unset")
+    canonical = git(repo, "check-attr", "text", "sources/2026-09-12-a.md").stdout.strip()
+    assert canonical.endswith("text: unspecified")
+
+
+def test_existing_gitignore_keeps_user_lines_and_gains_merit_rules(tmp_path):
+    (tmp_path / ".gitignore").write_bytes(b"node_modules/\n*.log")  # no trailing newline
+    (tmp_path / ".gitattributes").write_bytes(b"*.png binary\n")
+    init(tmp_path, project_id="sample", id_prefix="SMP")
+    ignore = (tmp_path / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert ignore[:2] == ["node_modules/", "*.log"]
+    assert ignore.count("proposals/") == 1
+    attrs = (tmp_path / ".gitattributes").read_text(encoding="utf-8").splitlines()
+    assert attrs[0] == "*.png binary"
+    assert attrs.count("sources/raw/** -text") == 1
+    assert git(tmp_path, "check-ignore", "-q", "proposals/x", check=False).returncode == 0
+    assert git(tmp_path, "check-attr", "text", "sources/raw/a.vtt").stdout.strip().endswith("unset")
+
+
+def test_rule_already_present_is_not_appended_again(tmp_path):
+    (tmp_path / ".gitignore").write_bytes(b"proposals/\nbuild/\n")
+    init(tmp_path, project_id="sample", id_prefix="SMP")
+    assert (tmp_path / ".gitignore").read_bytes() == b"proposals/\nbuild/\n"
+
+
+def test_init_twice_does_not_duplicate_appended_lines(tmp_path):
+    init(tmp_path, project_id="sample", id_prefix="SMP")
+    before = {n: (tmp_path / n).read_bytes() for n in (".gitignore", ".gitattributes")}
+    for name in ("merit.toml", "AGENTS.md", "CLAUDE.md", "GEMINI.md"):
+        (tmp_path / name).unlink()
+    init(tmp_path, project_id="sample", id_prefix="SMP")
+    assert {n: (tmp_path / n).read_bytes() for n in before} == before
+
+
+def test_existing_documents_make_init_refuse_naming_every_collision(tmp_path):
+    (tmp_path / "CLAUDE.md").write_text("my own notes\n", encoding="utf-8")
+    (tmp_path / "GEMINI.md").write_text("mine too\n", encoding="utf-8")
+    with pytest.raises(UsageError) as exc:
+        init(tmp_path, project_id="sample", id_prefix="SMP")
+    assert "CLAUDE.md" in str(exc.value) and "GEMINI.md" in str(exc.value)
+    assert "AGENTS.md" not in str(exc.value)
+    assert exc.value.fix
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["CLAUDE.md", "GEMINI.md"]
+    assert (tmp_path / "CLAUDE.md").read_text(encoding="utf-8") == "my own notes\n"
+
+
+def test_non_utf8_gitignore_is_a_collision_rather_than_corrupted(tmp_path):
+    utf16 = "node_modules/\n".encode("utf-16")  # what PowerShell 5.1 '>' writes
+    (tmp_path / ".gitignore").write_bytes(utf16)
+    with pytest.raises(UsageError) as exc:
+        init(tmp_path, project_id="sample", id_prefix="SMP")
+    assert ".gitignore" in str(exc.value)
+    assert (tmp_path / ".gitignore").read_bytes() == utf16
+
+
+def test_collision_fix_quotes_a_path_with_spaces(tmp_path):
+    target = tmp_path / "my project"
+    target.mkdir()
+    (target / "CLAUDE.md").write_text("x", encoding="utf-8")
+    with pytest.raises(UsageError) as exc:
+        init(target, project_id="sample", id_prefix="SMP")
+    assert f'"{target}"' in exc.value.fix
+
+
+def test_git_init_failure_is_an_environment_error_and_leaves_no_blocking_files(
+    tmp_path, monkeypatch
+):
+    def boom(*args, **kwargs):
+        raise subprocess.CalledProcessError(128, args[0], stderr=b"fatal: no can do")
+
+    monkeypatch.setattr(scaffold.subprocess, "run", boom)
+    with pytest.raises(EnvironmentError_) as exc:
+        init(tmp_path / "p", project_id="sample", id_prefix="SMP")
+    assert exc.value.exit_code == ExitCode.ENVIRONMENT
+    assert "no can do" in str(exc.value)
+    assert exc.value.fix
+    assert not (tmp_path / "p" / "merit.toml").exists()
+
+
+def test_a_literal_brace_in_a_template_survives(tmp_path, monkeypatch):
+    real = scaffold._template
+
+    def with_braces(name, **fields):
+        text = real(name, **fields)
+        return text + ' {"example": 1}\n' if name == "AGENTS.md" else text
+
+    monkeypatch.setattr(scaffold, "_template", with_braces)
+    init(tmp_path, project_id="sample", id_prefix="SMP")
+    text = (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
+    assert '{"example": 1}' in text
+    assert "{merit_version}" not in text
 
 
 def test_merit_toml_loads_and_pins_the_installed_version(repo):

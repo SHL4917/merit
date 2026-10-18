@@ -3,6 +3,7 @@
 import argparse
 import sys
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from merit import doctor as doctor_module
@@ -30,14 +31,6 @@ def _doctor(args: argparse.Namespace) -> int | None:
     return None
 
 
-# Command name -> handler taking the parsed Namespace and returning an exit
-# status (None means success). Later tasks register their commands here.
-COMMANDS: dict[str, Callable[[argparse.Namespace], int | None]] = {
-    "init": _init,
-    "doctor": _doctor,
-}
-
-
 def _init_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("target", nargs="?", default=".", help="directory to scaffold (default: .)")
     parser.add_argument("--project-id", required=True, help="lowercase project id, e.g. sample")
@@ -48,10 +41,21 @@ def _doctor_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("path", nargs="?", default=".", help="inside the repo (default: .)")
 
 
-# Command name -> function adding that command's arguments to its subparser.
-ARGUMENTS: dict[str, Callable[[argparse.ArgumentParser], None]] = {
-    "init": _init_arguments,
-    "doctor": _doctor_arguments,
+@dataclass(frozen=True)
+class Command:
+    """One CLI command: its handler and how it adds its own arguments."""
+
+    # Takes the parsed Namespace and returns an exit status (None means success).
+    handler: Callable[[argparse.Namespace], int | None]
+    # Adds this command's arguments to its subparser; None for a bare command.
+    configure: Callable[[argparse.ArgumentParser], None] | None = None
+
+
+# Command name -> Command. Later tasks register their commands here, read at
+# call time by build_parser and main.
+COMMANDS: dict[str, Command] = {
+    "init": Command(_init, _init_arguments),
+    "doctor": Command(_doctor, _doctor_arguments),
 }
 
 
@@ -61,10 +65,11 @@ def build_parser() -> argparse.ArgumentParser:
         description="Turn meeting transcripts into a traceable requirements baseline.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True, metavar="<command>")
-    for name, handler in COMMANDS.items():
-        subparser = subparsers.add_parser(name, help=handler.__doc__, description=handler.__doc__)
-        if name in ARGUMENTS:
-            ARGUMENTS[name](subparser)
+    for name, command in COMMANDS.items():
+        doc = command.handler.__doc__
+        subparser = subparsers.add_parser(name, help=doc, description=doc)
+        if command.configure is not None:
+            command.configure(subparser)
     return parser
 
 
@@ -76,7 +81,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         # argparse exits 0 for --help and 2 for a usage error.
         return int(ExitCode.SUCCESS if exc.code in (None, 0) else ExitCode.USAGE)
     try:
-        status = COMMANDS[args.command](args)
+        status = COMMANDS[args.command].handler(args)
     except MeritError as exc:
         print(f"error: {exc}", file=sys.stderr)
         print(f"fix: {exc.fix}", file=sys.stderr)
