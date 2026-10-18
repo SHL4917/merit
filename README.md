@@ -9,7 +9,10 @@ holds that, and installs this package at a pinned version.
 
 ## Install
 
-Requires Python 3.11 or later.
+To set up a project repository and run the loop end to end, see
+[`docs/BOOTSTRAP.md`](docs/BOOTSTRAP.md).
+
+To develop MERIT itself (requires Python 3.11 or later):
 
 ```
 py -3.12 -m venv .venv
