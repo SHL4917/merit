@@ -20,14 +20,24 @@ from merit.scaffold import init
 
 def _init(args: argparse.Namespace) -> int | None:
     """Scaffold a new requirements repo."""
-    init(Path(args.target), project_id=args.project_id, id_prefix=args.id_prefix)
+    if args.github:
+        from merit.git_ops import init_github
+        if not args.workflow_repo or not args.wheel_url or not args.wheel_sha256:
+            raise UsageError("--github requires --workflow-repo, --wheel-url and --wheel-sha256.",
+                             fix="merit init --github --help")
+        for finding in init_github(Path(args.target), project_id=args.project_id, id_prefix=args.id_prefix,
+                                   workflow_repo=args.workflow_repo, wheel_url=args.wheel_url,
+                                   wheel_sha256=args.wheel_sha256, github_repo=args.github_repo):
+            print(finding)
+    else:
+        init(Path(args.target), project_id=args.project_id, id_prefix=args.id_prefix)
     print(f"Scaffolded a MERIT requirements repo at {Path(args.target).resolve()}")
     return None
 
 
 def _doctor(args: argparse.Namespace) -> int | None:
     """Check the environment, version pin, git and gh, and repo validity."""
-    findings = doctor_module.doctor(find_repo_root(Path(args.path)))
+    findings = doctor_module.doctor(find_repo_root(Path(args.path)), workflow_repo=args.workflow_repo)
     for finding in findings:
         print(finding)
     if not findings:
@@ -112,10 +122,16 @@ def _init_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("target", nargs="?", default=".", help="directory to scaffold (default: .)")
     parser.add_argument("--project-id", required=True, help="lowercase project id, e.g. sample")
     parser.add_argument("--id-prefix", required=True, help="2-6 uppercase letters, e.g. SMP")
+    parser.add_argument("--github", action="store_true", help="create and push a private GitHub repo and request verified protections")
+    parser.add_argument("--github-repo", help="new repository OWNER/REPO (default: authenticated user/project id)")
+    parser.add_argument("--workflow-repo", help="trusted MERIT workflow OWNER/REPO; required with --github")
+    parser.add_argument("--wheel-url", help="explicit HTTPS release wheel URL; required with --github")
+    parser.add_argument("--wheel-sha256", help="pinned release wheel SHA-256; required with --github")
 
 
 def _doctor_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("path", nargs="?", default=".", help="inside the repo (default: .)")
+    parser.add_argument("--workflow-repo", help="trusted MERIT workflow OWNER/REPO for identity verification")
 
 
 def _anchor(args: argparse.Namespace) -> None:

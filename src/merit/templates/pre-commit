@@ -1,0 +1,3 @@
+#!/bin/sh
+# Error findings block the commit; advisory findings retain exit status zero.
+exec merit validate

@@ -1,0 +1,3 @@
+# Required code-owner review must also be enabled in branch protection.
+/.github/ @__OWNER__
+/merit.toml @__OWNER__

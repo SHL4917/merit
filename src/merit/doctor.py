@@ -1,7 +1,7 @@
 """``merit doctor``: environment, version pin, git/gh and repo validity.
 
-Each finding is one string prefixed ``error: `` or ``warning: ``. An empty
-list means healthy. Enforcement-tier checks join later.
+Each finding is one string prefixed ``error: ``, ``warning: `` or ``ok: ``.
+Enforcement findings name the API-verified tier or explain why it is unverified.
 """
 
 import shutil
@@ -93,7 +93,7 @@ def _tracked_proposals(repo_root: Path) -> list[str]:
     return [name for name in listed.stdout.decode("utf-8").split("\0") if name]
 
 
-def doctor(repo_root: Path) -> list[str]:
+def doctor(repo_root: Path, *, workflow_repo: str | None = None) -> list[str]:
     repo_root = Path(repo_root)
     findings: list[str] = []
 
@@ -132,4 +132,11 @@ def doctor(repo_root: Path) -> list[str]:
                         f"Fix: git rm --cached {subprocess.list2cmdline([name])}"
                     )
                 findings.extend(baseline_tag_findings(repo_root))
+    from merit.git_ops import detect_tier
+    tier = detect_tier(repo_root, workflow_repo)
+    if tier == "unverified":
+        findings.append(f"{WARNING}enforcement tier: unverified. "
+                        "Fix: merit doctor --workflow-repo OWNER/REPO (requires readable GitHub protection settings)")
+    else:
+        findings.append(f"ok: verified enforcement tier: {tier}")
     return findings

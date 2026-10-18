@@ -251,7 +251,7 @@ def test_built_wheel_contains_shipped_templates_and_resources(tmp_path):
     assert [path.name for path in wheels] == [f"merit-{__version__}-py3-none-any.whl"]
     with zipfile.ZipFile(wheels[0]) as archive:
         names = set(archive.namelist())
-        for name in ("AGENTS.md", "CLAUDE.md", "GEMINI.md", "merit.toml"):
+        for name in ("AGENTS.md", "CLAUDE.md", "GEMINI.md", "merit.toml", "workflow.yml", "CODEOWNERS", "pre-commit"):
             assert f"merit/templates/{name}" in names
         for resource in (ROOT / "src" / "merit").rglob("*"):
             if resource.is_file() and resource.suffix in (".json", ".md", ".html", ".toml"):

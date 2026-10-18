@@ -40,7 +40,9 @@ def warnings(findings):
 
 @pytest.mark.skipif(shutil.which("gh") is None, reason="a fully healthy report needs gh")
 def test_fresh_scaffold_is_healthy(repo):
-    assert doctor(repo) == []
+    findings = doctor(repo)
+    assert errors(findings) == []
+    assert any("enforcement tier: unverified" in finding for finding in findings)
 
 
 def test_fresh_scaffold_has_no_errors_even_without_gh(repo, monkeypatch):

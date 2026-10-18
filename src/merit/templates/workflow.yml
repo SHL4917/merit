@@ -1,0 +1,80 @@
+name: MERIT
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    uses: __WORKFLOW_REPO__/.github/workflows/merit-validate.yml@__SHA__
+    with:
+      wheel-url: '__WHEEL_URL__'
+      wheel-sha256: '__WHEEL_SHA256__'
+  report:
+    if: ${{ always() }}
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install the pinned release
+        working-directory: ${{ runner.temp }}
+        env:
+          MERIT_WHEEL_URL: '__WHEEL_URL__'
+          MERIT_WHEEL_SHA256: '__WHEEL_SHA256__'
+        run: |
+          python - <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          import tempfile
+          import urllib.request
+          from urllib.parse import urlsplit
+          # Scaffold validation guarantees an HTTPS URL and safe MERIT wheel basename.
+          with tempfile.TemporaryDirectory() as directory:
+              url = os.environ['MERIT_WHEEL_URL']
+              wheel = Path(directory) / urlsplit(url).path.rsplit('/', 1)[-1]
+              with urllib.request.urlopen(url) as response:
+                  if urlsplit(response.url).scheme != 'https':
+                      raise SystemExit('wheel redirect must remain HTTPS')
+                  data = response.read()
+              if hashlib.sha256(data).hexdigest() != os.environ['MERIT_WHEEL_SHA256']:
+                  raise SystemExit('MERIT wheel digest mismatch')
+              wheel.write_bytes(data)
+              subprocess.run([sys.executable, '-m', 'pip', 'install', str(wheel)], check=True)
+          PY
+      - name: Build report
+        run: merit report --output public/index.html
+      - uses: actions/upload-artifact@v4
+        id: report
+        with:
+          name: merit-report
+          path: public/index.html
+          if-no-files-found: error
+      - name: Comment the report link on the pull request
+        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+        uses: actions/github-script@v7
+        env:
+          MERIT_REPORT_URL: ${{ steps.report.outputs.artifact-url }}
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `MERIT approval report: ${process.env.MERIT_REPORT_URL}`
+            });
