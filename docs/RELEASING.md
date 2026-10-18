@@ -71,3 +71,15 @@ Local preparation ends after the commit, tag, wheel and digest checks. Pushing
 the tag, creating the remote release and uploading assets require publication
 authorization. MERIT's project CLI never merges or tags; the release tag above
 is a maintainer operation in this tool repository.
+
+## Which files change the wheel
+
+The release build packages exactly `README.md`, `pyproject.toml` and `src/merit`. Editing
+any of those three changes the wheel bytes, so the pinned `MERIT_WHEEL_SHA256` must be
+re-measured in the same commit. Everything under `docs/` is outside the wheel and is free
+to change without a re-measure. The packaging test enforces this: it builds a wheel from
+the tree and fails when the pin does not describe it.
+
+Between releases, `main`'s pin therefore describes an unreleased build rather than the most
+recent published asset. That is expected. A project repository pins the reusable workflow at
+a release tag's 40-hex commit SHA, never at `main`, so only a tagged pin is ever consumed.
