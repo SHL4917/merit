@@ -40,3 +40,4 @@ This is the tool repository. It holds no requirements data. Design: `docs/superp
 
 - Schemas (`schemas/*.json`) and prompts (`prompts/*.md`) ship as package data, declared in `pyproject.toml`. Load them with `importlib.resources`, never a repo-relative path.
 - The argparse tree in `cli.py` is the single source of truth for the agent manual. `help-agent` is generated from it, so never hand-write a flag list elsewhere.
+- Browser bundles are read-only context. Save the browser's bare YAML reply under `proposals/` and run the ordinary `merit apply`; there is no browser-specific parser or transaction.

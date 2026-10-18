@@ -407,6 +407,18 @@ def _schema_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("artefact", help="artefact name, for example proposal or requirement")
 
 
+def _pack(args: argparse.Namespace) -> None:
+    """Print one Markdown bundle for a browser chat; apply replies with merit apply."""
+    from merit.pack import pack
+    print(pack(find_repo_root(Path(args.path)), args.stage), end="")
+
+
+def _pack_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("path", nargs="?", default=".", help="inside the repo (default: .)")
+    parser.add_argument("--stage", required=True,
+                        help="intake, draft, review, clarify, baseline (or numbered resource name)")
+
+
 @dataclass(frozen=True)
 class Command:
     """One CLI command: its handler and how it adds its own arguments."""
@@ -437,6 +449,7 @@ COMMANDS: dict[str, Command] = {
     "help-agent": Command(_help_agent, _help_agent_arguments),
     "prompt": Command(_prompt, _prompt_arguments),
     "schema": Command(_schema, _schema_arguments),
+    "pack": Command(_pack, _pack_arguments),
 }
 
 
