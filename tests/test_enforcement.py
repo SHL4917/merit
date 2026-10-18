@@ -13,6 +13,7 @@ import yaml
 from merit import cli, doctor, git_ops as ops
 from merit.errors import EnvironmentError_, UsageError
 from merit.scaffold import _template, init
+from test_git_ops import git, repo
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_REPO = "acme/merit"
@@ -280,20 +281,29 @@ def test_doctor_without_expected_identity_names_unverified(github, tmp_path):
     assert any("enforcement tier: unverified" in value for value in doctor.doctor(tmp_path))
 
 
-def test_legacy_local_release_tag_is_peeled_but_refused_without_trusted_digest(tmp_path, monkeypatch):
+def test_annotated_release_tag_is_peeled_but_refused_without_trusted_digest(repo, tmp_path, monkeypatch):
+    workflow = repo / ops.WORKFLOW_PATH
+    workflow.parent.mkdir(parents=True)
+    # The packaged contract with its digest placeholder still in place owns no pinned digest.
+    workflow.write_text(_template("validator-workflow.yml"), encoding="utf-8")
+    git(repo, "add", ops.WORKFLOW_PATH)
+    git(repo, "commit", "-m", "workflow without a trusted validator digest")
+    git(repo, "-c", "tag.gpgsign=false", "tag", "-a", "-m", "release", "v0.1.0")
+    commit = git(repo, "rev-parse", "v0.1.0^{commit}")
+    tag_object = git(repo, "rev-parse", "v0.1.0")
+    assert git(repo, "cat-file", "-t", "v0.1.0") == "tag" and tag_object != commit
+    requested = []
+
     def local_api(root, endpoint, **kwargs):
+        requested.append(endpoint)
         if endpoint == f"repos/{WORKFLOW_REPO}/commits/v0.1.0":
-            sha = subprocess.run(["git", "rev-parse", "v0.1.0^{commit}"], cwd=ROOT,
-                                 check=True, capture_output=True, encoding="utf-8").stdout.strip()
-            return {"sha": sha}
+            return {"sha": commit}  # GitHub's commits/{ref} peels an annotated tag to its commit
         sha = endpoint.rsplit("=", 1)[1]
-        content = subprocess.run(["git", "show", f"{sha}:{ops.WORKFLOW_PATH}"], cwd=ROOT,
-                                 check=True, capture_output=True, encoding="utf-8").stdout
-        assert "parse_wheel_filename" in content  # corrected R75/R76 tree
-        return file_response(ops.WORKFLOW_PATH, content)
+        return file_response(ops.WORKFLOW_PATH, git(repo, "show", f"{sha}:{ops.WORKFLOW_PATH}"))
     monkeypatch.setattr(ops, "_api", local_api)
     with pytest.raises(EnvironmentError_, match="does not own a verified validator digest"):
         ops.resolve_workflow_sha(tmp_path, WORKFLOW_REPO)
+    assert requested[-1] == f"repos/{WORKFLOW_REPO}/contents/{ops.WORKFLOW_PATH}?ref={commit}"
 
 
 @pytest.mark.parametrize("sha", ["v0.1.0", "a" * 39, "g" * 40, "a" * 40 + "\n"])
