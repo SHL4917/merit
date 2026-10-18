@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest"]
+dev = ["pytest", "build", "setuptools==84.0.0", "wheel==0.48.0"]
 
 [project.scripts]
 merit = "merit.cli:main"
