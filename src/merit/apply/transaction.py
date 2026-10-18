@@ -80,7 +80,9 @@ def apply_proposal(repo_root, proposal_path):
                     if source.is_symlink() or any(p.is_symlink() for p in source.rglob("*")):
                         raise UsageError("governed trees must not contain symlinks", fix="merit validate")
                     shutil.copytree(source, stage / dirname)
-                else:
+                elif dirname != "sources":
+                    # V1 must see a missing sources directory, just as it does
+                    # in the real tree. Apply cannot repair source intake.
                     (stage / dirname).mkdir()
             written = {}
             for index, operation in enumerate(data["operations"]):

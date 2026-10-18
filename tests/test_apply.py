@@ -17,6 +17,7 @@ from merit.cli import main
 from merit.errors import AnchorError, EnvironmentError_, UsageError, ValidationFailed
 from merit.ingest.bundle import bundle_sha256
 from merit.model import effective_status, load_repo
+from merit.scaffold import init
 from merit.validate.runner import CHECKS, run_checks
 from test_checks_issues import project, save
 from test_checks_ids import git
@@ -56,6 +57,27 @@ def test_handlers_match_schema_exactly():
     names = {item["properties"]["op"]["const"]
              for item in schema["properties"]["operations"]["items"]["oneOf"]}
     assert names == set(operations.HANDLERS) and len(names) == 10
+
+
+def test_missing_sources_is_v1_through_apply_and_retains_proposal(tmp_path, capsys):
+    root = tmp_path / "project"
+    init(root, project_id="sample", id_prefix="SMP")
+    (root / "sources" / "raw").rmdir()
+    (root / "sources").rmdir()
+    path = proposal(root, dict(op="add_candidate", statement="Idea", rationale="Explore"))
+    before = snapshot(root)
+    root_mtime = root.stat().st_mtime_ns
+    with pytest.raises(ValidationFailed, match="operation index 0") as error:
+        apply_proposal(root, path)
+    assert set(re.findall(r"\bV[0-9]+\b", str(error.value))) == {"V1"}
+    assert snapshot(root) == before
+    assert root.stat().st_mtime_ns == root_mtime
+    assert path.is_file() and not (root / "sources").exists()
+    assert not (root / "candidates" / "CAN-0001.yaml").exists()
+    assert main(["apply", str(path)]) == 1
+    assert "V1" in capsys.readouterr().err
+    assert snapshot(root) == before
+    assert root.stat().st_mtime_ns == root_mtime
 
 
 @pytest.mark.parametrize("change", [dict(id="REQ-SMP-0002"), dict(op="invented"),
