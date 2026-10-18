@@ -67,6 +67,23 @@ def test_malformed_yaml(known_good):
     assert "line 2" in finding.message and finding.fix
 
 
+@pytest.mark.parametrize("value", ["2026-99-99", "2026-02-30", "2026-10-18T99:00:00Z"])
+def test_invalid_yaml_date_constructor_is_located_v3(known_good, capsys, value):
+    from merit.validate.runner import run_checks
+    path = known_good / "candidates" / "CAN-0001.yaml"
+    path.write_text(
+        "schema_version: 1\nid: CAN-0001\nstatement: Dark mode\nrationale: Idea\n"
+        f"raised_by: Alex\nraised_on: {value}\nstatus: open\n", encoding="utf-8")
+    finding, = run_checks(known_good)
+    assert finding.check_id == "V3" and finding.path == path
+    assert "line 6, column 12" in finding.message
+    assert finding.fix == f"correct {path}, then run: merit validate"
+    assert main(["validate", str(known_good)]) == 1
+    output = capsys.readouterr()
+    assert "V3" in output.out and "line 6, column 12" in output.out
+    assert "Traceback" not in output.out + output.err
+
+
 def test_candidate_evidence_is_v3(known_good):
     from merit.validate.runner import run_checks
     path = known_good / "candidates" / "CAN-0001.yaml"

@@ -12,6 +12,19 @@ from merit.model import ARTEFACT_DIRS
 from merit.validate.runner import Finding, register
 
 
+class _LocatedSafeLoader(yaml.SafeLoader):
+    """Preserve the node location when a safe scalar constructor rejects data."""
+
+    def construct_object(self, node, deep=False):
+        try:
+            return super().construct_object(node, deep=deep)
+        except ValueError as exc:
+            # SafeLoader's timestamp constructor raises bare ValueError for
+            # impossible dates/times, losing the mark the V3 guard needs.
+            raise yaml.constructor.ConstructorError(
+                None, None, str(exc), node.start_mark) from exc
+
+
 @lru_cache(maxsize=None)
 def load_schema(kind):
     """Read installed package data, independent of the working directory."""
@@ -51,7 +64,7 @@ def schema_check(context):
             fix = f"correct {path}, then run: merit validate"
             try:
                 text = path.read_text(encoding="utf-8")
-                raw = yaml.safe_load(text)
+                raw = yaml.load(text, Loader=_LocatedSafeLoader)
             except yaml.YAMLError as exc:
                 mark = getattr(exc, "problem_mark", None)
                 location = f"line {mark.line + 1}, column {mark.column + 1}" if mark else "unknown line"
