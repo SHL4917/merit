@@ -23,7 +23,7 @@ merit = "merit.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-merit = ["schemas/*.json", "prompts/*.md", "templates/**"]
+merit = ["schemas/*.json", "prompts/*.md", "templates/**", "report/*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

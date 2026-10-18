@@ -161,6 +161,18 @@ def _validate_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--strict", action="store_true", help="enable strict validation checks")
 
 
+def _report(args: argparse.Namespace) -> None:
+    """Build an offline, read-only HTML approval report."""
+    from merit.report import build_report
+    output = build_report(find_repo_root(Path(args.path)), args.output)
+    print(f"Report: {output.resolve()}")
+
+
+def _report_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("path", nargs="?", default=".", help="inside the repo (default: .)")
+    parser.add_argument("--output", help="HTML output path (default: public/index.html in the repo)")
+
+
 def _ingest_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("origin", help="the .vtt, .docx or .txt file to ingest")
     parser.add_argument(
@@ -300,6 +312,7 @@ COMMANDS: dict[str, Command] = {
     "doctor": Command(_doctor, _doctor_arguments),
     "ingest": Command(_ingest, _ingest_arguments),
     "validate": Command(_validate, _validate_arguments),
+    "report": Command(_report, _report_arguments),
     "anchor": Command(_anchor, _anchor_arguments),
     "apply": Command(_apply, _apply_arguments),
     "help-agent": Command(_help_agent, _help_agent_arguments),

@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>@@title@@ - MERIT approval report</title>
+<style>
+:root { color-scheme: light; --bg: oklch(1 0 0); --surface: oklch(.97 .005 350); --ink: oklch(.24 .015 350); --muted: oklch(.44 .015 350); --primary: oklch(.42 .15 350); --accent: oklch(.28 .06 260); --line: oklch(.82 .005 350); }
+* { box-sizing: border-box; }
+body { margin: 0; color: var(--ink); background: var(--bg); font: 1rem/1.6 system-ui, sans-serif; }
+header, main, footer { max-width: 76rem; margin: auto; padding: 1.5rem 2rem; }
+header { padding-top: 3rem; border-bottom: 1px solid var(--line); }
+h1 { font-size: 2rem; margin: 0; } h2 { font-size: 1.5rem; } h3 { font-size: 1.1rem; }
+h1, h2, h3 { line-height: 1.3; text-wrap: balance; }
+p, blockquote { max-width: 75ch; text-wrap: pretty; }
+nav { display: flex; flex-wrap: wrap; gap: .5rem 1.25rem; margin-top: 1.5rem; }
+a { color: var(--primary); text-underline-offset: .2em; }
+section { padding: 1rem 0 2rem; border-bottom: 1px solid var(--line); scroll-margin-top: 1rem; }
+article { padding: 1rem 0; border-bottom: 1px solid var(--line); }
+.blocker, .finding { padding: 1rem; background: var(--surface); }
+details { border: 1px solid var(--line); margin: .75rem 0; border-radius: .4rem; }
+summary { padding: 1rem; cursor: pointer; } summary:hover { background: var(--surface); }
+.statement { display: block; padding-top: .5rem; max-width: 75ch; }
+.detail-body { padding: 0 1rem 1rem; }
+.badge { display: inline-block; border: 1px solid var(--line); border-radius: .3rem; padding: .1rem .5rem; margin: .15rem; font-size: .85rem; font-weight: 600; }
+.provenance { color: var(--accent); background: var(--surface); }
+.provisional, .severity { color: var(--bg); background: var(--primary); border-color: var(--primary); }
+form { display: flex; align-items: center; flex-wrap: wrap; gap: .65rem; }
+button, select { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--muted); border-radius: .3rem; min-height: 2.75rem; padding: .35rem .75rem; }
+button { cursor: pointer; } button:hover { background: var(--surface); } button:active { background: var(--line); }
+:focus-visible { outline: 3px solid var(--primary); outline-offset: 3px; }
+figure { margin: 1rem 0; padding: 1rem; background: var(--surface); }
+blockquote { margin: 0 0 .5rem; white-space: pre-wrap; }
+figcaption, footer { color: var(--muted); font-size: .9rem; }
+.table-scroll { overflow-x: auto; } table { border-collapse: collapse; width: 100%; }
+caption { text-align: left; padding-bottom: .75rem; } th, td { border: 1px solid var(--line); padding: .65rem; text-align: left; }
+th { background: var(--surface); } pre { white-space: pre-wrap; font: inherit; max-width: 75ch; }
+body { overflow-wrap: anywhere; } [hidden] { display: none !important; }
+@media (max-width: 40rem) { header, main, footer { padding: 1rem; } h1 { font-size: 1.65rem; } form { align-items: stretch; } select { max-width: 100%; } }
+@media print { form, nav { display: none; } details > .detail-body { display: block; } }
+</style>
+</head>
+<body>
+<header><h1>@@title@@ - approval report</h1><p>Review requirements, follow their evidence, and resolve what prevents a baseline. Read-only; continue the discussion in chat.</p>
+<nav aria-label="Report sections"><a href="#blockers">Readiness</a><a href="#requirements">Requirements</a><a href="#candidates">Candidates</a><a href="#issues">Issues</a><a href="#decisions">Decisions</a><a href="#traceability">Traceability</a><a href="#citations">Citations</a></nav></header>
+<main>@@content@@</main>
+<footer>MERIT proves evidence is in the record. Reviewers judge whether it represents the speaker's intent.</footer>
+<script id="report-data" type="application/json">@@data@@</script>
+</body>
+</html>
