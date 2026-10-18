@@ -33,7 +33,7 @@ def find_repo_root(start: Path) -> Path:
             return directory
     raise EnvironmentError_(
         f"No {CONFIG_NAME} found in {start} or any parent directory.",
-        fix="merit init <project-id> <ID-PREFIX>",
+        fix="merit init --project-id <project-id> --id-prefix <ID-PREFIX>",
     )
 
 
@@ -42,7 +42,7 @@ def load_config(repo_root: Path) -> Config:
     if not path.is_file():
         raise EnvironmentError_(
             f"{CONFIG_NAME} not found at {path}.",
-            fix="merit init <project-id> <ID-PREFIX>",
+            fix="merit init --project-id <project-id> --id-prefix <ID-PREFIX>",
         )
     try:
         data = tomllib.loads(path.read_text(encoding="utf-8"))

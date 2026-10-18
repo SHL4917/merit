@@ -1,0 +1,12 @@
+[project]
+id = "{project_id}"
+id_prefix = "{id_prefix}"
+
+[tool]
+merit_version = "{merit_version}"
+
+[classification]
+allowed = ["PUBLIC", "INTERNAL", "CONFIDENTIAL"]
+
+[coverage]
+min_chars = 40
