@@ -70,12 +70,13 @@ def bash_executable():
     return shutil.which("bash")
 
 
-def run_install(tmp_path, digest, url="https://example.invalid/merit.whl"):
+def run_install(tmp_path, digest, url="https://example.invalid/merit-0.1.0-py3-none-any.whl"):
     bash = bash_executable()
     if bash is None:
         pytest.skip("Bash is needed to exercise the Ubuntu workflow script")
     # Only curl and pip are mocked. The downloaded bytes and sha256sum are real.
     prelude = r'''
+python() { "$MERIT_TEST_PYTHON" "$@"; }
 curl() {
   printf 'download\n' >> events
   while [[ "$1" != "--output" ]]; do shift; done
@@ -91,7 +92,8 @@ pip() {
     result = subprocess.run(
         [bash, "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", prelude + install_step()["run"]],
         cwd=tmp_path, capture_output=True, encoding="utf-8", check=False,
-        env={**os.environ, "MERIT_WHEEL_SHA256": digest, "MERIT_WHEEL_URL": url},
+        env={**os.environ, "MERIT_WHEEL_SHA256": digest, "MERIT_WHEEL_URL": url,
+             "MERIT_TEST_PYTHON": Path(sys.executable).as_posix()},
     )
     events = (tmp_path / "events").read_text(encoding="utf-8").splitlines() if (tmp_path / "events").exists() else []
     return result, events
@@ -110,12 +112,44 @@ def test_verified_bytes_are_installed_under_a_valid_wheel_filename(tmp_path, upp
     assert (tmp_path / args[-1]).read_bytes() == b"offline wheel fixture\n"
 
 
+@pytest.mark.parametrize("filename, suffix", [
+    ("merit-0.2.0-py3-none-any.whl", ""),
+    ("merit-0.1.0-1-py3-none-any.whl", "?download=1"),
+    ("merit-0.1.0-py2.py3-none-any.whl", "?filename=untrusted.whl#ignored"),
+    ("merit-0.1.0-py3-none-any.whl", "?token=$(touch%20injected)"),
+])
+def test_install_filename_matches_url_path_despite_query_or_fragment(tmp_path, filename, suffix):
+    digest = hashlib.sha256(b"offline wheel fixture\n").hexdigest()
+    result, events = run_install(tmp_path, digest, f"https://example.invalid/releases/{filename}{suffix}")
+    assert result.returncode == 0, result.stderr
+    assert events == ["download", "install"]
+    args = (tmp_path / "pip-args").read_text(encoding="utf-8").splitlines()
+    assert args[-1] == f"./{filename}"
+    assert (tmp_path / filename).read_bytes() == b"offline wheel fixture\n"
+    assert not (tmp_path / "injected").exists()
+
+
+@pytest.mark.parametrize("filename", [
+    "merit.whl", "other-0.1.0-py3-none-any.whl", "merit-not_a_version-py3-none-any.whl",
+    "merit-0.1.0-py3--any.whl", "merit-0.1.0-py3-none-any.whl.exe",
+    "merit-0.1.0-py3-none-any.whl%0A", "%2e%2e%2fmerit-0.1.0-py3-none-any.whl",
+    "merit-0.1.0-py3-none-$(touch%20injected).whl", "",
+])
+def test_invalid_or_mismatched_wheel_filename_is_rejected_before_download(tmp_path, filename):
+    result, events = run_install(tmp_path, "a" * 64, f"https://example.invalid/{filename}?filename=merit-0.1.0-py3-none-any.whl")
+    assert result.returncode != 0
+    assert events == []
+    assert not (tmp_path / "pip-args").exists()
+    assert not (tmp_path / "injected").exists()
+
+
 def test_wrong_digest_stops_before_install(tmp_path):
     result, events = run_install(tmp_path, "0" * 64)
     assert result.returncode != 0
     assert events == ["download"]
     assert "FAILED" in result.stdout
     assert not (tmp_path / "pip-args").exists()
+    assert not (tmp_path / f"merit-{__version__}-py3-none-any.whl").exists()
 
 
 @pytest.mark.parametrize("digest", ["", "a" * 63, "a" * 65, "g" * 64, "a" * 64 + "\n", "$(touch injected)"])
@@ -168,7 +202,7 @@ def test_releasing_documents_commit_then_tag_then_publish():
     assert positions == sorted(positions)
     assert "merit-validate.yml" in text and "sha-256" in text
     assert "merit init" in text and "sha" in text
-    assert "valid wheel filename" in text
+    assert "valid wheel filename" in " ".join(text.split())
 
 
 def assert_tag_workflow(root, tag):

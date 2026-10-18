@@ -3,8 +3,8 @@
 The bootstrap order is mandatory:
 
 1. Commit the release-ready package and `.github/workflows/merit-validate.yml`
-   together. Match `pyproject.toml`, `merit.__version__`, and the reusable
-   workflow's versioned wheel filename. Run `python -m pytest -q -W error`.
+   together. Match `pyproject.toml` and `merit.__version__`.
+   Run `python -m pytest -q -W error`.
 2. Tag that commit, for example `git tag -a v0.1.0 -m "MERIT 0.1.0"`.
    Resolve it with `git rev-parse 'v0.1.0^{commit}'`, then confirm the resolved
    commit contains `.github/workflows/merit-validate.yml` with
@@ -29,10 +29,13 @@ release is an asset host, so installation uses its explicit wheel URL. A
 versioned URL identifies a location; the pinned digest identifies the bytes.
 
 The validator downloads to `merit.whl` in runner temporary storage and verifies
-it with `sha256sum -c` before installation. It then renames those verified bytes
-to `merit-0.1.0-py3-none-any.whl`: pip requires a valid wheel filename containing
-version and platform tags and rejects the design's illustrative `merit.whl`
-installation name. The install command uses only that verified local wheel.
+it with `sha256sum -c` before installation. The filename comes from the URL's
+path basename, excluding any query or fragment; it must parse as a valid wheel
+filename for MERIT and contain only safe filename characters. Only after the
+digest check succeeds does the workflow rename the verified bytes to that
+validated basename and install the resulting local wheel. Pip requires version
+and platform tags and rejects the design's illustrative `merit.whl`
+installation name.
 Checkout includes complete history so immutability and baseline checks retain
 their Git comparison points.
 
