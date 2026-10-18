@@ -12,11 +12,32 @@ import yaml
 import merit
 from merit import git_ops
 from merit.errors import MeritError
+from merit.anchor import anchor_evidence, evidence_fields
+from merit.errors import AnchorError
 from merit.ingest import SUPPORTED_SUFFIXES, _canonical_text
 from merit.ingest.bundle import bundle_sha256
 from merit.ingest.canonical import normalise_text, sha256_bytes, sha256_text
 from merit.model import ARTEFACT_DIRS
 from merit.validate.runner import Finding, register
+
+
+@register("V5")
+def evidence_anchoring(context):
+    findings = []
+    for directory in ("requirements", "issues", "decisions"):
+        for artefact in getattr(context.repo, directory).values():
+            path = context.artefact_root / directory / (artefact.id + ".yaml")
+            for location, evidence in evidence_fields(artefact):
+                try:
+                    anchored = anchor_evidence(evidence, context.artefact_root)
+                    if (evidence.line is None or evidence.speaker is None
+                            or evidence.bundle_sha256 is None):
+                        raise AnchorError("evidence is not anchored", fix=f"merit anchor {path}")
+                    del anchored
+                except AnchorError as exc:
+                    findings.append(Finding("V5", path, f"{location}: {exc}",
+                                            f"correct {location} in {path}, then run: merit anchor {path}"))
+    return findings
 
 
 def _source_sidecars(root):

@@ -116,6 +116,17 @@ def _doctor_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("path", nargs="?", default=".", help="inside the repo (default: .)")
 
 
+def _anchor(args: argparse.Namespace) -> None:
+    """Resolve unanchored quotes and verify existing evidence anchors."""
+    from merit.anchor import anchor_file
+    path = Path(args.file).resolve()
+    anchor_file(path, find_repo_root(path.parent))
+
+
+def _anchor_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("file", help="governed artefact YAML file")
+
+
 def _validate(args: argparse.Namespace) -> int:
     """Validate governed artefacts with deterministic numbered checks."""
     from merit.validate import runner
@@ -177,6 +188,7 @@ COMMANDS: dict[str, Command] = {
     "doctor": Command(_doctor, _doctor_arguments),
     "ingest": Command(_ingest, _ingest_arguments),
     "validate": Command(_validate, _validate_arguments),
+    "anchor": Command(_anchor, _anchor_arguments),
 }
 
 
