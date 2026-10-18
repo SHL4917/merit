@@ -39,6 +39,7 @@ def find_quote(lines, quote):
     """Find one complete line or contiguous join, using whitespace only."""
     target = normalise_whitespace(quote)
     matches = []
+    invalid = []
     if not target:
         raise _error("empty quote cannot be anchored")
     for start in range(len(lines)):
@@ -46,7 +47,13 @@ def find_quote(lines, quote):
         for end in range(start, len(lines)):
             text = normalise_whitespace(text + " " + lines[end].text)
             if text == target:
-                matches.append(lines[start:end + 1])
+                span = lines[start:end + 1]
+                try:
+                    _span(span)
+                except AnchorError as exc:
+                    invalid.append(exc)
+                else:
+                    matches.append(span)
             if len(text) > len(target):
                 break
     if len(matches) > 1:
@@ -58,6 +65,8 @@ def find_quote(lines, quote):
             if sum(line.number == number for line in lines) != 1:
                 raise _error(f"canonical line {number} is not unique")
         return match
+    if invalid:
+        raise invalid[0]
     closest = max(lines, key=lambda line: SequenceMatcher(
         None, target, normalise_whitespace(line.text)).ratio(), default=None)
     detail = "source is empty" if closest is None else f"closest line {closest.number}: {closest.text!r}"
@@ -96,6 +105,8 @@ def _source(root, source):
 
 def anchor_evidence(evidence, root):
     """Return an anchored copy; supplied anchor fields are assertions, never hints."""
+    if not normalise_whitespace(evidence.quote):
+        raise _error("empty quote cannot be anchored")
     lines, digest = _source(root, evidence.source)
     if evidence.line is None:
         match = find_quote(lines, evidence.quote)

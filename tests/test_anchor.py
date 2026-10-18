@@ -56,6 +56,16 @@ def test_canonical_numbers_not_offsets():
         find_quote([CanonicalLine(42, "Sam", "Hello"), CanonicalLine(42, "Sam", "Other")], "Hello")
 
 
+@pytest.mark.parametrize("invalid", [
+    [CanonicalLine(2, "#", "First Second")],
+    [CanonicalLine(2, "Lee", "First"), CanonicalLine(3, "Sam", "Second")],
+])
+def test_unique_legal_match_ignores_illegal_candidates(invalid):
+    from merit.anchor import find_quote
+    match = find_quote([CanonicalLine(1, "Sam", "First Second"), *invalid], "First Second")
+    assert (match.line, match.end_line, match.speaker) == (1, 1, "Sam")
+
+
 @pytest.fixture
 def anchored_repo(tmp_path):
     root = tmp_path / "project"
@@ -184,3 +194,33 @@ def test_forbidden_spans_fail_v5(anchored_repo, speaker, reason):
     save_artefact(req, root / "requirements" / (req.id + ".yaml"))
     errors = [f for f in run_checks(root) if f.severity == "error"]
     assert len(errors) == 1 and errors[0].check_id == "V5" and reason in errors[0].message
+
+
+@pytest.mark.parametrize("mode", ["anchor", "validate"])
+def test_empty_preanchored_quote_fails_anchor_and_v5(anchored_repo, mode):
+    import yaml
+    from merit.anchor import anchor_evidence
+    from merit.ingest.bundle import bundle_sha256
+    from merit.ingest.canonical import render_canonical, sha256_text
+    root, evidence = anchored_repo
+    canonical = root / evidence.source
+    text = render_canonical([CanonicalLine(1, "Sam", "")])
+    canonical.write_text(text, encoding="utf-8")
+    sidecar = canonical.with_suffix(".meta.yaml")
+    meta = yaml.safe_load(sidecar.read_text(encoding="utf-8"))
+    meta.update(sha256=sha256_text(text), extractor_version="0.0.0")
+    meta["bundle_sha256"] = bundle_sha256(meta)
+    sidecar.write_text(yaml.safe_dump(meta), encoding="utf-8")
+    evidence = dataclasses.replace(evidence, quote=" \t ", line=1, speaker="Sam",
+                                   bundle_sha256=meta["bundle_sha256"])
+    if mode == "anchor":
+        with pytest.raises(AnchorError, match="empty quote"):
+            anchor_evidence(evidence, root)
+        return
+    req = Requirement(schema_version=1, id="REQ-SMP-0001", statement="Keep logs.",
+                      type="functional", provenance="stated", status="draft", evidence=[evidence])
+    path = root / "requirements" / (req.id + ".yaml")
+    save_artefact(req, path)
+    errors = [f for f in run_checks(root) if f.severity == "error"]
+    assert len(errors) == 1 and errors[0].check_id == "V5"
+    assert errors[0].path == path and "empty quote" in errors[0].message
