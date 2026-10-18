@@ -52,29 +52,59 @@ def load_config(repo_root: Path) -> Config:
             fix=f"Correct the syntax in {path}, then re-run the command.",
         ) from exc
 
-    def required(section: str, key: str):
-        try:
-            return data[section][key]
-        except KeyError:
-            raise EnvironmentError_(
-                f"{path} is missing required key [{section}] {key}.",
-                fix=f"Add {key} under [{section}] in {path}, then re-run the command.",
-            ) from None
+    def invalid(detail: str, key_hint: str) -> EnvironmentError_:
+        return EnvironmentError_(
+            f"{path} {detail}",
+            fix=f"Correct {key_hint} in {path}, then re-run the command.",
+        )
 
-    config = Config(
-        project_id=required("project", "id"),
-        id_prefix=required("project", "id_prefix"),
-        merit_version=required("tool", "merit_version"),
-        classifications=tuple(required("classification", "allowed")),
-        coverage_min_chars=data.get("coverage", {}).get(
-            "min_chars", DEFAULT_COVERAGE_MIN_CHARS
-        ),
-    )
-    if config.merit_version != merit.__version__:
+    def table(section: str) -> dict:
+        value = data.get(section, {})
+        if not isinstance(value, dict):
+            raise invalid(f"has [{section}] that is not a table.", f"[{section}]")
+        return value
+
+    def required(section: str, key: str, expected: type, label: str):
+        values = table(section)
+        if key not in values:
+            raise invalid(f"is missing required key [{section}] {key}.", f"{key}")
+        value = values[key]
+        if not isinstance(value, expected):
+            raise invalid(
+                f"has [{section}] {key} that is not {label}.", f"{key} under [{section}]"
+            )
+        return value
+
+    # The pin is compared first: a merit.toml written by a different merit may
+    # have a different layout, and "wrong version" is the useful message then.
+    merit_version = required("tool", "merit_version", str, "a string")
+    if merit_version != merit.__version__:
         raise EnvironmentError_(
-            f"{CONFIG_NAME} pins merit {config.merit_version} but "
+            f"{CONFIG_NAME} pins merit {merit_version} but "
             f"{merit.__version__} is installed; validation would run under "
             "different rules.",
-            fix=f"pip install merit=={config.merit_version}",
+            fix=f"pipx install git+https://github.com/<org>/merit@v{merit_version}",
         )
-    return config
+
+    allowed = required("classification", "allowed", list, "a list of strings")
+    if not all(isinstance(item, str) for item in allowed):
+        raise invalid(
+            "has [classification] allowed that is not a list of strings.",
+            "allowed under [classification]",
+        )
+
+    coverage = table("coverage")
+    min_chars = coverage.get("min_chars", DEFAULT_COVERAGE_MIN_CHARS)
+    if not isinstance(min_chars, int) or isinstance(min_chars, bool):
+        raise invalid(
+            "has [coverage] min_chars that is not an integer.",
+            "min_chars under [coverage]",
+        )
+
+    return Config(
+        project_id=required("project", "id", str, "a string"),
+        id_prefix=required("project", "id_prefix", str, "a string"),
+        merit_version=merit_version,
+        classifications=tuple(allowed),
+        coverage_min_chars=min_chars,
+    )
