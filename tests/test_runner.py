@@ -177,7 +177,8 @@ def test_registry_order_and_context(known_good, tmp_path, monkeypatch):
             assert context.context_root == known_good
             assert context.config.id_prefix == "SMP"
             assert context.strict is True
-            assert context.repo is not None
+            # V1 is raw integrity preflight; all later rules get a built model.
+            assert (context.repo is None) == (check_id == "V1")
             seen.append(check_id)
             return []
         runner.register(check_id)(check)

@@ -43,3 +43,10 @@ def comparison_point(repo_root: Path) -> ComparisonPoint:
 def file_at(repo_root: Path, rev: str, path: str | Path) -> str | None:
     """Read a repository-relative file verbatim from a revision, if present."""
     return _git(repo_root, "show", f"{rev}:{Path(path).as_posix()}")
+
+
+def files_at(repo_root: Path, rev: str, prefix: str | Path) -> list[str]:
+    """Enumerate exact POSIX paths, including spaces and Unicode, read-only."""
+    output = _git(repo_root, "ls-tree", "-r", "--name-only", "-z", rev,
+                  "--", Path(prefix).as_posix())
+    return [name for name in output.split("\0") if name] if output is not None else []

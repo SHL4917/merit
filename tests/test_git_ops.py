@@ -3,7 +3,20 @@ import subprocess
 
 import pytest
 
-from merit.git_ops import ComparisonPoint, comparison_point, file_at, list_tags
+from merit.git_ops import ComparisonPoint, comparison_point, file_at, files_at, list_tags
+
+
+def test_files_at_preserves_exact_paths_and_uses_history(repo):
+    directory = repo / "sources"
+    directory.mkdir()
+    name = "sources/space \u00e9.meta.yaml"
+    (repo / name).write_text("historical\n", encoding="utf-8")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "source")
+    (repo / name).unlink()
+    assert files_at(repo, "HEAD", "sources") == [name]
+    assert files_at(repo, "HEAD", "missing") == []
+    assert files_at(repo, "absent-revision", "sources") == []
 
 
 def git(root, *args):

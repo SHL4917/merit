@@ -1,15 +1,174 @@
-"""V3: package schemas validate the raw YAML, before model construction."""
+"""Numbered validation rules, with raw source integrity independent of models."""
 
 import datetime
 import json
 from functools import lru_cache
 from importlib import resources
+from pathlib import PurePosixPath
 
 import jsonschema
 import yaml
 
+import merit
+from merit import git_ops
+from merit.errors import MeritError
+from merit.ingest import SUPPORTED_SUFFIXES, _canonical_text
+from merit.ingest.bundle import bundle_sha256
+from merit.ingest.canonical import normalise_text, sha256_bytes, sha256_text
 from merit.model import ARTEFACT_DIRS
 from merit.validate.runner import Finding, register
+
+
+def _source_sidecars(root):
+    """Read usable mappings only; V3 owns malformed YAML and field types."""
+    for path in sorted((root / "sources").glob("*.meta.yaml")):
+        try:
+            raw = yaml.load(path.read_text(encoding="utf-8"), Loader=_LocatedSafeLoader)
+            if isinstance(raw, dict):
+                yield path, raw
+        except (OSError, UnicodeError, yaml.YAMLError):
+            continue
+
+
+def _bundle_path(root, value, *, raw=False):
+    """Accept exact repository POSIX paths, never absolute or escaping aliases."""
+    if not isinstance(value, str) or "\\" in value:
+        return None
+    path = PurePosixPath(value)
+    parts = path.parts
+    if (path.as_posix() != value or path.is_absolute() or ".." in parts
+            or any(":" in part for part in parts)):
+        return None
+    if raw:
+        if len(parts) != 3 or parts[:2] != ("sources", "raw"):
+            return None
+    elif len(parts) != 2 or parts[0] != "sources" or path.suffix != ".md":
+        return None
+    candidate = root.joinpath(*parts)
+    if not candidate.resolve().is_relative_to(root.resolve()):
+        return None
+    return candidate
+
+
+@register("V1")
+def source_integrity(context):
+    findings = []
+    root = context.artefact_root
+
+    def fail(path, message):
+        findings.append(Finding("V1", path, message,
+                                f"restore {path} from the committed bundle, then run: merit validate"))
+
+    for canonical in sorted((root / "sources").glob("*.md")):
+        sidecar = canonical.with_suffix(".meta.yaml")
+        if not sidecar.is_file():
+            fail(sidecar, "source sidecar is missing")
+    for sidecar, data in _source_sidecars(root):
+        expected = "sources/" + sidecar.name[:-len(".meta.yaml")] + ".md"
+        canonical = _bundle_path(root, data.get("source"))
+        if data.get("source") != expected or canonical is None:
+            fail(sidecar, "source path must match the canonical bundle path " + expected)
+        canonical = _bundle_path(root, expected)
+        if canonical is None:
+            fail(sidecar, "canonical bundle path escapes the repository")
+        else:
+            try:
+                text = canonical.read_text(encoding="utf-8")
+                if sha256_text(text) != data.get("sha256"):
+                    fail(canonical, "canonical SHA-256 mismatch")
+            except (OSError, UnicodeError) as exc:
+                fail(canonical, f"canonical file missing or unreadable: {exc}")
+        origin = _bundle_path(root, data.get("origin"), raw=True)
+        if origin is None:
+            fail(sidecar, "original origin path is missing or invalid")
+        else:
+            try:
+                if sha256_bytes(origin.read_bytes()) != data.get("origin_sha256"):
+                    fail(origin, "original raw SHA-256 mismatch in source bundle")
+            except OSError as exc:
+                fail(origin, f"original file missing or unreadable in source bundle: {exc}")
+        for field in ("record_type", "authored_by"):
+            if not isinstance(data.get(field), str) or not data[field].strip():
+                fail(sidecar, f"source bundle missing {field}")
+        if data.get("classification") not in context.config.classifications:
+            fail(sidecar, "source classification is not permitted by configuration")
+        try:
+            recomputed = bundle_sha256(data)
+            if recomputed != data.get("bundle_sha256"):
+                fail(sidecar, "bundle SHA-256 mismatch: immutable metadata has changed")
+        except (ValueError, TypeError, RecursionError) as exc:
+            fail(sidecar, f"cannot recompute bundle SHA-256: {exc}")
+    return findings
+
+
+@register("V2")
+def source_immutability(context):
+    point = git_ops.comparison_point(context.context_root)
+    if point.kind == "none" or point.rev is None:
+        return []
+    findings = []
+    for name in git_ops.files_at(context.context_root, point.rev, "sources"):
+        path = PurePosixPath(name)
+        if len(path.parts) != 2 or not name.endswith(".meta.yaml"):
+            continue
+        prior_text = git_ops.file_at(context.context_root, point.rev, name)
+        try:
+            prior = yaml.load(prior_text, Loader=_LocatedSafeLoader) if prior_text else None
+            now = yaml.load((context.artefact_root / name).read_text(encoding="utf-8"),
+                            Loader=_LocatedSafeLoader)
+            same = (isinstance(prior, dict) and isinstance(now, dict)
+                    and prior.get("bundle_sha256") is not None
+                    and prior["bundle_sha256"] == now.get("bundle_sha256")
+                    and bundle_sha256(now) == prior["bundle_sha256"])
+            # Compare actual content too: retaining the old digest is not immutability.
+            canonical = _bundle_path(context.artefact_root, now.get("source")) if isinstance(now, dict) else None
+            origin = _bundle_path(context.artefact_root, now.get("origin"), raw=True) if isinstance(now, dict) else None
+            same = (same and canonical is not None and origin is not None
+                    and sha256_text(canonical.read_text(encoding="utf-8")) == now.get("sha256")
+                    and sha256_bytes(origin.read_bytes()) == now.get("origin_sha256"))
+        except (OSError, UnicodeError, yaml.YAMLError, ValueError, TypeError, RecursionError):
+            same = False
+        if not same:
+            findings.append(Finding("V2", context.artefact_root / name,
+                                    f"source bundle differs from comparison point {point.rev}",
+                                    "restore the historical bundle; ingest corrections as a new source"))
+    return findings
+
+
+@register("V12")
+def source_reextraction(context):
+    findings = []
+    for sidecar, data in _source_sidecars(context.artefact_root):
+        origin = _bundle_path(context.artefact_root, data.get("origin"), raw=True)
+        canonical = _bundle_path(context.artefact_root, data.get("source"))
+        if origin is None or canonical is None:
+            continue
+        try:
+            raw = origin.read_bytes()
+            text = canonical.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            continue  # V1 owns missing and unreadable bundle files.
+        if sha256_bytes(raw) != data.get("origin_sha256"):
+            continue  # An altered original is a V1 error, never an advisory.
+        version = data.get("extractor_version")
+        if not isinstance(version, str):
+            continue
+        fix = "ingest the original as a new source with the installed extractor"
+        if version != merit.__version__:
+            findings.append(Finding("V12", sidecar,
+                                    f"recorded extractor {version}; installed extractor {merit.__version__}",
+                                    fix, "advisory"))
+            continue
+        try:
+            if origin.suffix.lower() not in SUPPORTED_SUFFIXES:
+                raise ValueError(f"unsupported original parser: {origin.suffix}")
+            if normalise_text(_canonical_text(raw, origin.suffix.lower())) == normalise_text(text):
+                continue
+            message = "canonical text does not match re-extraction of retained original"
+        except (MeritError, ValueError, TypeError) as exc:
+            message = f"cannot re-extract retained original: {exc}"
+        findings.append(Finding("V12", canonical, message, fix))
+    return findings
 
 
 class _LocatedSafeLoader(yaml.SafeLoader):

@@ -62,15 +62,19 @@ def run_checks(artefact_root, *, context_root=None, strict=False):
     context_root = root if context_root is None else Path(context_root)
     context = CheckContext(root, context_root, load_config(context_root), strict)
     findings = CHECKS["V3"](context)
-    if findings:
+    schema_failed = bool(findings)
+    # Raw integrity owns absent metadata, including when V3 rejects other fields.
+    if "V1" in CHECKS:
+        findings.extend(CHECKS["V1"](context))
+    if schema_failed:
         return findings
     try:
         context.repo = load_repo(root)
     except ValidationFailed as exc:
         # load_repo supplies a located message (including a filename/id mismatch).
         path = next((p for p in root.rglob("*.yaml") if str(exc).startswith(f"{p}:")), root)
-        return [Finding("V3", path, str(exc), exc.fix)]
+        return findings + [Finding("V3", path, str(exc), exc.fix)]
     for check_id in sorted(CHECKS, key=lambda value: int(value[1:])):
-        if check_id != "V3":
+        if check_id not in ("V1", "V3"):
             findings.extend(CHECKS[check_id](context))
     return findings
