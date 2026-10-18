@@ -215,6 +215,60 @@ def _baseline_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--prepared-by", help="preparer's name (default: current user)")
 
 
+def _start_draft(args: argparse.Namespace) -> None:
+    """Create and check out a working draft branch."""
+    from merit.git_ops import start_draft
+    print(start_draft(find_repo_root(Path.cwd()), args.branch))
+
+
+def _start_draft_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("branch", help="new draft branch name")
+
+
+def _save(args: argparse.Namespace) -> None:
+    """Save a checkpoint containing only the named files."""
+    from merit.git_ops import save
+    # CLI paths are relative to the invocation directory, even below repo root.
+    paths = [str(Path(path).absolute()) for path in args.paths]
+    print(save(find_repo_root(Path.cwd()), paths, args.message))
+
+
+def _save_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("paths", nargs="+", help="individual files to commit")
+    parser.add_argument("-m", "--message", required=True, help="checkpoint message")
+
+
+def _push(args: argparse.Namespace) -> None:
+    """Push the current branch for review and set its upstream."""
+    from merit.git_ops import push
+    print(push(find_repo_root(Path.cwd()), args.remote))
+
+
+def _push_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--remote", default="origin", help="remote name (default: origin)")
+
+
+def _open_pr(args: argparse.Namespace) -> None:
+    """Open a pull request with a generated repository summary."""
+    from merit.git_ops import open_pr
+    print(open_pr(find_repo_root(Path.cwd()), args.title, base=args.base))
+
+
+def _open_pr_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--title", required=True, help="pull request title")
+    parser.add_argument("--base", help="target branch (default: repository default)")
+
+
+def _pr_body(args: argparse.Namespace) -> None:
+    """Generate a pull request description from repository state."""
+    from merit.git_ops import pr_body
+    print(pr_body(find_repo_root(Path(args.path))), end="")
+
+
+def _pr_body_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("path", nargs="?", default=".", help="inside the repo (default: .)")
+
+
 def _ingest_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("origin", help="the .vtt, .docx or .txt file to ingest")
     parser.add_argument(
@@ -358,6 +412,11 @@ COMMANDS: dict[str, Command] = {
     "report": Command(_report, _report_arguments),
     "questions": Command(_questions, _questions_arguments),
     "baseline": Command(_baseline, _baseline_arguments),
+    "start-draft": Command(_start_draft, _start_draft_arguments),
+    "save": Command(_save, _save_arguments),
+    "push": Command(_push, _push_arguments),
+    "open-pr": Command(_open_pr, _open_pr_arguments),
+    "pr-body": Command(_pr_body, _pr_body_arguments),
     "anchor": Command(_anchor, _anchor_arguments),
     "apply": Command(_apply, _apply_arguments),
     "help-agent": Command(_help_agent, _help_agent_arguments),
