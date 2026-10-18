@@ -41,3 +41,18 @@ This is the tool repository. It holds no requirements data. Design: `docs/superp
 - Schemas (`schemas/*.json`) and prompts (`prompts/*.md`) ship as package data, declared in `pyproject.toml`. Load them with `importlib.resources`, never a repo-relative path.
 - The argparse tree in `cli.py` is the single source of truth for the agent manual. `help-agent` is generated from it, so never hand-write a flag list elsewhere.
 - Browser bundles are read-only context. Save the browser's bare YAML reply under `proposals/` and run the ordinary `merit apply`; there is no browser-specific parser or transaction.
+
+## Reversals (do not re-propose the earlier approach)
+
+- **Append-only sources became immutable sources.** A committed source is never edited, not even by appending: whole-file hashing makes appending incoherent, because the hash changes and invalidates every evidence entry already citing it. A correction or re-transcription is a new source; the link is a separate append-only supersession artefact, never an edit to either sidecar.
+- **A `proposed` provenance value became candidates.** Provenance is `stated` or `inferred`, with no third value. An ungrounded idea is a candidate, a separate artefact kind with no `evidence` field at all, so the central claim (every requirement resolves to a verbatim, speaker-attributed span) holds without a qualifying clause.
+- **V9 forbidding a provisional decision became V9 permitting it.** Earlier revisions had V9 reject a self-recorded note with no `confirmed_by`. That made the state unreachable: `merit apply` validates transactionally and would roll the decision back before anyone saw it, leaving `awaiting_confirmation` dead code and V8's handling of it unreachable. V9 permits the record; V8 blocks it from a baseline.
+
+## When to update this file
+
+1. After adding or renumbering a check: the ID registry is the most consulted fact in the repo.
+2. After changing an interface consumed by more than one module (`Finding`, `ComparisonPoint`, `effective_status`, the proposal operation set).
+3. After a decision that reverses an earlier one: record the reversal and the reason, or it will be re-litigated.
+4. When a session had to re-derive something already settled: that is evidence of a gap, and the fix is a line here, not a longer prompt.
+
+Keep it under 200 lines; past that it costs more context than it saves. Never add a file inventory.
