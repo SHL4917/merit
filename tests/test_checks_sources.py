@@ -184,6 +184,20 @@ def test_origin_paths_are_exact_and_confined(bundle, origin):
     assert "V1" in ids(bundle[0])
 
 
+@pytest.mark.parametrize("field,value", [("origin", "sources/raw/a\0.txt"),
+                                        ("source", "sources/a\0.md")])
+def test_invalid_path_characters_are_located_v1_without_traceback(bundle, capsys, field, value):
+    root, result = bundle
+    data = meta(bundle)
+    data[field] = value
+    save(bundle, data, rehash=True)
+    findings = run_checks(root)
+    assert any(f.check_id == "V1" and f.path == root / result.meta for f in findings)
+    assert main(["validate", str(root)]) == 1
+    output = capsys.readouterr()
+    assert "V1" in output.out and "Traceback" not in output.out + output.err
+
+
 @pytest.mark.parametrize("suffix", [".vtt", ".docx"])
 def test_reextraction_dispatches_real_registered_parser(bundle, tmp_path, suffix):
     root, _ = bundle

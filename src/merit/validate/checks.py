@@ -45,7 +45,12 @@ def _bundle_path(root, value, *, raw=False):
     elif len(parts) != 2 or parts[0] != "sources" or path.suffix != ".md":
         return None
     candidate = root.joinpath(*parts)
-    if not candidate.resolve().is_relative_to(root.resolve()):
+    try:
+        confined = candidate.resolve().is_relative_to(root.resolve())
+    except (OSError, ValueError):
+        # Valid YAML strings need not be valid filesystem paths (e.g. NUL).
+        return None
+    if not confined:
         return None
     return candidate
 
@@ -58,6 +63,10 @@ def source_integrity(context):
     def fail(path, message):
         findings.append(Finding("V1", path, message,
                                 f"restore {path} from the committed bundle, then run: merit validate"))
+
+    if not (root / "sources").is_dir():
+        fail(root / "sources", "sources directory is missing or is not a directory")
+        return findings
 
     for canonical in sorted((root / "sources").glob("*.md")):
         sidecar = canonical.with_suffix(".meta.yaml")

@@ -145,14 +145,19 @@ def test_schema_rejects_trailing_newline_id():
     assert not validator.is_valid("REQ-SMP-0001\n")
 
 
-def test_empty_scaffold_and_missing_directories(tmp_path):
+def test_empty_scaffold_and_missing_directories(tmp_path, capsys):
     from merit.validate.runner import run_checks
     init(tmp_path, project_id="sample", id_prefix="SMP")
     (tmp_path / "issues").rmdir()
     assert run_checks(tmp_path) == []
     (tmp_path / "sources" / "raw").rmdir()
     (tmp_path / "sources").rmdir()
-    assert all(f.check_id != "V3" for f in run_checks(tmp_path))
+    findings = run_checks(tmp_path)
+    assert {f.check_id for f in findings} == {"V1"}
+    assert findings[0].path == tmp_path / "sources"
+    assert main(["validate", str(tmp_path)]) == 1
+    output = capsys.readouterr()
+    assert "V1" in output.out and "Traceback" not in output.out + output.err
 
 
 def test_cli_validation(known_good, capsys, monkeypatch):
