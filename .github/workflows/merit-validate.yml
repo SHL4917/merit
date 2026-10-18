@@ -1,0 +1,52 @@
+name: MERIT validation
+
+on:
+  workflow_call:
+    inputs:
+      wheel-url:
+        description: Explicit HTTPS URL of the released MERIT wheel
+        required: true
+        type: string
+      wheel-sha256:
+        description: Pinned SHA-256 digest of the released wheel (64 hex characters)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify and install released MERIT
+        id: install-merit
+        shell: bash
+        working-directory: ${{ runner.temp }}
+        env:
+          MERIT_WHEEL_URL: ${{ inputs.wheel-url }}
+          MERIT_WHEEL_SHA256: ${{ inputs.wheel-sha256 }}
+        run: |
+          set -euo pipefail
+          [[ "$MERIT_WHEEL_SHA256" =~ ^[0-9a-fA-F]{64}$ ]] || {
+            echo 'wheel-sha256 must be exactly 64 hexadecimal characters' >&2
+            exit 1
+          }
+          [[ "$MERIT_WHEEL_URL" == https://* ]] || {
+            echo 'wheel-url must be an explicit HTTPS URL' >&2
+            exit 1
+          }
+          curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 --output merit.whl "$MERIT_WHEEL_URL"
+          printf '%s  merit.whl\n' "$MERIT_WHEEL_SHA256" | sha256sum -c -
+          # pip requires a valid wheel filename, including version and platform tags.
+          mv merit.whl merit-0.1.0-py3-none-any.whl
+          pip install ./merit-0.1.0-py3-none-any.whl
+      - name: Validate project
+        run: merit validate

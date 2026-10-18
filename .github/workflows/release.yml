@@ -1,0 +1,64 @@
+name: Release MERIT
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify tag and release tree
+        shell: bash
+        run: |
+          python - <<'PY'
+          import ast
+          import os
+          from pathlib import Path
+          import tomllib
+
+          version = tomllib.loads(Path('pyproject.toml').read_text(encoding='utf-8'))['project']['version']
+          tree = ast.parse(Path('src/merit/__init__.py').read_text(encoding='utf-8'))
+          module_version = next(ast.literal_eval(node.value) for node in tree.body
+                                if isinstance(node, ast.Assign)
+                                and any(isinstance(target, ast.Name) and target.id == '__version__'
+                                        for target in node.targets))
+          if os.environ['GITHUB_REF_NAME'] != f'v{version}' or module_version != version:
+              raise SystemExit('tag, package and module versions must match')
+          PY
+          git cat-file -e "${GITHUB_SHA}:.github/workflows/merit-validate.yml"
+      - name: Build wheel and digest
+        shell: bash
+        run: |
+          python -m pip install build
+          python -m build --wheel
+          cd dist
+          sha256sum *.whl > SHA256SUMS
+          sha256sum -c SHA256SUMS
+      - name: Attach wheel to tagged release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --verify-tag --draft --title "$GITHUB_REF_NAME" --notes 'Install the attached wheel only after verifying its pinned SHA-256 digest.'
+          fi
+          gh release upload "$GITHUB_REF_NAME" dist/*.whl dist/SHA256SUMS
+          gh release edit "$GITHUB_REF_NAME" --draft=false
