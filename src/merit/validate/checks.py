@@ -18,7 +18,7 @@ from merit.errors import AnchorError
 from merit.ingest import SUPPORTED_SUFFIXES, _canonical_text
 from merit.ingest.bundle import bundle_sha256
 from merit.ingest.canonical import normalise_text, sha256_bytes, sha256_text
-from merit.model import ARTEFACT_DIRS, ID_PATTERNS
+from merit.model import ARTEFACT_DIRS, ID_PATTERNS, derive_open_issues, effective_status
 from merit.validate.runner import Finding, register
 
 
@@ -67,6 +67,46 @@ def id_discipline(context):
                 findings.append(Finding("V4", path,
                                         f"historical {kind} id {identity!r} must remain at {name} ({point.rev})",
                                         f"restore {identity!r} at {path}; allocate a new id for a new artefact"))
+    return findings
+
+
+@register("V7")
+def issue_rules(context):
+    findings = []
+    for issue in context.repo.issues.values():
+        path = context.artefact_root / "issues" / (issue.id + ".yaml")
+
+        def fail(field, message):
+            findings.append(Finding("V7", path, message,
+                                    f"correct {field} in {path}, then run: merit validate"))
+
+        if len(issue.evidence) < 2:
+            fail("evidence", "issue evidence requires at least two entries")
+        if not any(identity in context.repo.requirements for identity in issue.affects):
+            fail("affects", "issue affects must name at least one existing requirement")
+        if issue.status == "resolved":
+            decision = context.repo.decisions.get(issue.resolved_by)
+            if decision is None or issue.id not in decision.resolves:
+                fail("resolved_by", "resolved_by must name an existing decision that resolves this issue")
+        if issue.status == "dismissed" and not (issue.dismissed_reason or "").strip():
+            fail("dismissed_reason", "dismissed issue requires dismissed_reason")
+    return findings
+
+
+@register("V8")
+def baseline_issue_status(context):
+    findings = []
+    for requirement in context.repo.requirements.values():
+        if requirement.status != "baselined":
+            continue
+        blockers = derive_open_issues(requirement, context.repo)
+        if blockers:
+            path = context.artefact_root / "requirements" / (requirement.id + ".yaml")
+            detail = ", ".join(f"{identity} ({effective_status(context.repo.issues[identity], context.repo)})"
+                               for identity in blockers)
+            findings.append(Finding("V8", path, f"baselined requirement has blocking issues: {detail}",
+                                    "resolve or dismiss the affecting issues with evidence and reasons; "
+                                    "confirm provisional decisions, then run: merit validate"))
     return findings
 
 

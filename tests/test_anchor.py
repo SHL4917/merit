@@ -158,9 +158,12 @@ def test_issue_evidence_is_v5(anchored_repo):
     from merit.model import Issue
     root, evidence = anchored_repo
     good = anchor_evidence(evidence, root)
+    requirement = Requirement(schema_version=1, id="REQ-SMP-0001", statement="Keep logs.",
+                              type="functional", provenance="stated", status="draft", evidence=[good])
+    save_artefact(requirement, root / "requirements" / (requirement.id + ".yaml"))
     issue = Issue(schema_version=1, id="ISS-0001", kind="contradiction", summary="Which?",
                   evidence=[good, dataclasses.replace(good, speaker="Lee")],
-                  affects=[], question="Which?", status="open", owner="Alex")
+                  affects=[requirement.id], question="Which?", status="open", owner="Alex")
     path = root / "issues" / "ISS-0001.yaml"
     save_artefact(issue, path)
     finding, = run_checks(root)
