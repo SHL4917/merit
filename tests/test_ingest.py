@@ -28,6 +28,7 @@ BOM = "\ufeff"
 E_ACUTE = "\u00e9"
 
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+MC_NS = "http://schemas.openxmlformats.org/markup-compatibility/2006"
 
 
 # --------------------------------------------------------------------- helpers
@@ -87,7 +88,7 @@ def make_docx(target, paragraphs, *, core: str | None = None):
             body += f"<w:p><w:r><w:t>{paragraph}</w:t></w:r></w:p>"
     document = (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        f'<w:document xmlns:w="{W_NS}"><w:body>{body}</w:body></w:document>'
+        f'<w:document xmlns:w="{W_NS}" xmlns:mc="{MC_NS}"><w:body>{body}</w:body></w:document>'
     )
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("word/document.xml", document)
@@ -345,6 +346,36 @@ def test_staging_directory_is_cleaned_up_after_success_and_failure(repo, incomin
     bad.write_bytes(b"not a vtt at all\n")
     with pytest.raises(ValidationFailed):
         ingest(repo, bad, **KWARGS)
+    assert list(scratch.iterdir()) == []
+
+
+def test_staging_directory_is_cleaned_up_when_verification_or_placement_fails(
+    repo, incoming, tmp_path, monkeypatch
+):
+    # The parse-failure case above never reaches staging. These two do: the
+    # staging directory exists, then something fails.
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+    original = write_vtt(incoming)
+
+    real_stage = ingest_package._stage
+    seen = []
+
+    def corrupting(staging, name, data):
+        seen.append(staging)
+        return real_stage(staging, name, data + b"x" if name == "origin" else data)
+
+    monkeypatch.setattr(ingest_package, "_stage", corrupting)
+    with pytest.raises(ValidationFailed):
+        ingest(repo, original, **KWARGS)
+    assert seen and not seen[0].exists()  # a staging directory really was created
+    assert list(scratch.iterdir()) == []
+    monkeypatch.setattr(ingest_package, "_stage", real_stage)
+
+    _fail_on_call(monkeypatch, 2)
+    with pytest.raises(OSError, match="injected"):
+        ingest(repo, original, **KWARGS)
     assert list(scratch.iterdir()) == []
 
 
@@ -825,15 +856,58 @@ def test_cli_ingest_outside_a_repo_is_an_environment_error(incoming, tmp_path, m
 # inside one named function), and the behavioural tests prove the invariant
 # from the outside (bytes AND mtimes of existing sources).
 
-MUTATING_CALLS = {
+# What this static layer is, honestly: a REGRESSION DETECTOR, not a defence
+# against a determined author. Nothing statically ties _rollback's unlink to
+# "only paths this run created"; the behavioural tests (byte-and-mtime
+# snapshots, the squatter race, rollback injection) carry the real guarantee.
+#
+# It is closed-world about imports: the package may import only the modules
+# and names listed below, so a mutating API cannot be reached by aliasing
+# (``import os as o``, ``from shutil import rmtree as rt``) because it was never
+# imported. On top of that, mutating attribute names may be *referenced* (not
+# just called) only inside four named functions, every callee must be a plain
+# name or attribute (no ``table[k]()`` or ``partial(f)()``), and the dynamic
+# escape hatches are banned.
+
+ALLOWED_IMPORTS = {
+    "datetime", "hashlib", "html", "io", "json", "re", "tempfile", "zipfile", "yaml",
+    "merit", "xml.etree.ElementTree",
+}
+ALLOWED_FROM = {
+    "__future__": {"annotations"},
+    "collections.abc": {"Mapping", "Sequence"},
+    "dataclasses": {"dataclass"},
+    "merit.config": {"Config", "load_config"},
+    "merit.errors": {"UsageError", "ValidationFailed"},
+    "merit.ingest.bundle": {"IMMUTABLE_META_FIELDS", "bundle_sha256"},
+    "merit.ingest.canonical": {
+        "CanonicalLine", "STRUCTURAL_SPEAKER", "normalise_text", "parse_canonical",
+        "render_canonical", "sha256_bytes", "sha256_text",
+    },
+    "merit.ingest.docx": {"parse_docx", "read_xml_part"},
+    "merit.ingest.txt": {"parse_txt", "split_speaker"},
+    "merit.ingest.vtt": {"parse_vtt"},
+    "pathlib": {"Path"},
+    "subprocess": {"list2cmdline"},  # a pure string function; the module is not importable
+    "typing": {"Any"},
+    "xml.parsers": {"expat"},
+}
+MUTATING_NAMES = {
     "unlink", "rmdir", "rmtree", "remove", "removedirs", "rename", "renames",
     "truncate", "write_text", "write_bytes", "move", "copy", "copy2",
     "copyfile", "copyfileobj", "copytree", "symlink_to", "hardlink_to", "link",
     "symlink", "utime", "chmod", "chown", "touch", "mkdir", "makedirs",
     "writestr", "write", "writelines", "extractall", "extract",
+    "execv", "execve", "execl", "execvp", "spawnv", "startfile",
+    "call", "check_call", "check_output", "run", "Popen", "system", "popen",
 }
-# Ways to reach any of the above without naming it, or to leave Python.
-ESCAPE_CALLS = {"getattr", "eval", "exec", "__import__", "system", "popen", "Popen", "run"}
+# Dynamic ways to reach any of the above without naming it, or to leave Python.
+BANNED_BARE_NAMES = {
+    "replace", "getattr", "setattr", "delattr", "eval", "exec", "__import__",
+    "compile", "globals", "vars", "locals", "breakpoint", "__builtins__",
+    # Modules nothing in the package may import, so no name for them may appear.
+    "os", "shutil", "subprocess", "builtins", "importlib", "ctypes", "functools", "operator",
+}
 READ_ONLY_OPEN_MODES = {"r", "rb"}
 # The only places allowed to touch the filesystem destructively, and how.
 ALLOWED_MUTATIONS = {
@@ -842,10 +916,12 @@ ALLOWED_MUTATIONS = {
     "_create_exclusive": {"write"},  # open(path, "xb"): fails if the file exists
     "_rollback": {"unlink", "rmdir"},  # removes only what this very run created
 }
+# ZipFile.open(member) reads a zip member; it has no write mode.
+ZIP_MEMBER_OPEN_SCOPES = {"read_part"}
 
 
-def _mode_argument(node: ast.Call, position: int):
-    """The positional-or-keyword ``mode`` argument of a call, or None."""
+def _argument(node: ast.Call, position: int):
+    """The positional-or-keyword argument ``mode`` of a call, or None."""
     if len(node.args) > position:
         return node.args[position]
     for keyword in node.keywords:
@@ -854,87 +930,155 @@ def _mode_argument(node: ast.Call, position: int):
     return None
 
 
-def mutation_violations(source: str, filename: str = "<module>") -> list[str]:
+def mutation_violations(source: str, filename: str = "<module>", *, check_imports: bool = True) -> list[str]:
+    tree = ast.parse(source, filename)
     found: list[str] = []
+    callees = {id(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)}
 
     def visit(node: ast.AST, scope: str) -> None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             scope = node.name
+        where = f"{filename}:{getattr(node, 'lineno', 0)} {scope}()"
+
+        if check_imports and isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name not in ALLOWED_IMPORTS:
+                    found.append(f"{where} imports {alias.name}")
+        if check_imports and isinstance(node, ast.ImportFrom):
+            allowed = ALLOWED_FROM.get(node.module or "", set())
+            for alias in node.names:
+                if node.level or alias.name not in allowed:
+                    found.append(f"{where} imports {alias.name} from {node.module}")
+
         if isinstance(node, ast.Call):
             func = node.func
-            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
-            where = f"{filename}:{node.lineno} {scope}()"
-            if name in MUTATING_CALLS and name not in ALLOWED_MUTATIONS.get(scope, set()):
-                found.append(f"{where} calls {name}")
-            # str.replace(old, new) is everywhere; Path.replace(target) and
-            # os.replace(src, dst) are the file operations.
-            if name == "replace" and (
-                len(node.args) == 1
-                or (isinstance(func, ast.Attribute) and getattr(func.value, "id", "") == "os")
-            ):
-                found.append(f"{where} calls replace")
-            if name in ESCAPE_CALLS:
-                found.append(f"{where} calls {name}")
-            if name == "open":
-                if isinstance(func, ast.Attribute) and getattr(func.value, "id", "") == "os":
-                    found.append(f"{where} calls os.open")
-                # open(path, mode) versus path.open(mode)
-                mode = _mode_argument(node, 1 if isinstance(func, ast.Name) else 0)
+            if not isinstance(func, (ast.Name, ast.Attribute)):
+                found.append(f"{where} calls something that is neither a name nor an attribute")
+            if isinstance(func, ast.Name) and func.id == "open":
+                mode = _argument(node, 1)
                 literal = mode.value if isinstance(mode, ast.Constant) else None
                 if literal == "xb":
                     if scope != "_create_exclusive":
                         found.append(f"{where} creates a file outside _create_exclusive")
                 elif mode is not None and literal not in READ_ONLY_OPEN_MODES:
                     found.append(f"{where} opens with mode {literal!r}")
-            if name == "ZipFile":
-                mode = _mode_argument(node, 1)
+            if isinstance(func, ast.Attribute) and func.attr == "open":
+                mode = _argument(node, 0)
+                literal = mode.value if isinstance(mode, ast.Constant) else None
+                zip_member = scope in ZIP_MEMBER_OPEN_SCOPES and len(node.args) == 1 and not node.keywords
+                read_only = literal in READ_ONLY_OPEN_MODES and len(node.args) + len(node.keywords) == 1
+                if not (zip_member or read_only):
+                    found.append(f"{where} calls .open() other than a read-only open")
+            if isinstance(func, ast.Name) and func.id == "ZipFile" or (
+                isinstance(func, ast.Attribute) and func.attr == "ZipFile"
+            ):
+                mode = _argument(node, 1)
                 if mode is not None and not (isinstance(mode, ast.Constant) and mode.value == "r"):
                     found.append(f"{where} opens a zip for writing")
+
+        if isinstance(node, ast.Attribute):
+            if node.attr in MUTATING_NAMES and node.attr not in ALLOWED_MUTATIONS.get(scope, set()):
+                found.append(f"{where} uses .{node.attr}")
+            if node.attr == "replace":
+                # str.replace(old, new) is everywhere; Path.replace(target), a bare
+                # reference such as map(p.replace, xs), and os.replace are not.
+                call_with_two = id(node) in callees and _arity.get(id(node), 0) >= 2
+                if not call_with_two:
+                    found.append(f"{where} uses .replace other than str.replace(old, new)")
+            if node.attr == "open" and id(node) not in callees:
+                found.append(f"{where} references .open without calling it")
+        if isinstance(node, ast.Name):
+            if node.id in BANNED_BARE_NAMES or node.id in MUTATING_NAMES:
+                found.append(f"{where} uses the name {node.id}")
+            if node.id == "open" and id(node) not in callees:
+                found.append(f"{where} references open without calling it")
+
         for child in ast.iter_child_nodes(node):
             visit(child, scope)
 
-    visit(ast.parse(source, filename), "<module>")
+    _arity = {id(n.func): len(n.args) + len(n.keywords) for n in ast.walk(tree) if isinstance(n, ast.Call)}
+    visit(tree, "<module>")
     return found
 
 
+# Each is a real way to alter or delete an existing source. These are caught by
+# the call/attribute rules alone, with the import rule switched OFF, so a
+# change to the import allow-list cannot mask a hole in them.
+BAD_CALL_SNIPPETS = [
+    "def ingest():\n    Path('x').write_text('a')",
+    "def ingest():\n    Path('x').unlink()",
+    "def ingest():\n    shutil.rmtree('sources')",
+    "def ingest():\n    os.replace('a', 'b')",
+    "def ingest():\n    path.replace(target)",
+    "def ingest():\n    os.remove('a')",
+    "def ingest():\n    open('x', 'w')",
+    "def ingest():\n    open('x', mode='a')",
+    "def ingest():\n    open('x', 'r+b')",
+    "def ingest():\n    p.open('wb')",
+    "def ingest():\n    p.open(mode)",
+    "def ingest():\n    shutil.move('a', 'b')",
+    "def ingest():\n    shutil.copyfile('a', 'b')",
+    "def ingest():\n    zipfile.ZipFile('x', 'w')",
+    "def ingest():\n    getattr(os, 'remove')('a')",
+    "def ingest():\n    Path('x').touch()",
+    "def ingest():\n    f.truncate()",
+    "def ingest():\n    subprocess.run(['rm', 'x'])",
+    "def ingest():\n    subprocess.call(['rm', 'x'])",
+    "def ingest():\n    subprocess.check_call(['rm', 'x'])",
+    "def ingest():\n    subprocess.check_output(['rm', 'x'])",
+    "def ingest():\n    os.execv('/bin/rm', ['rm'])",
+    # Indirect forms: none of these name the call at the call site.
+    "def ingest():\n    rm = os.remove\n    rm(x)",
+    "def ingest():\n    map(os.remove, xs)",
+    "def ingest():\n    functools.partial(os.remove, x)()",
+    "def ingest():\n    operator.methodcaller('unlink')(p)",
+    "def ingest():\n    {'x': os.remove}['x'](a)",
+    "def ingest():\n    fs = [p.unlink]\n    fs[0]()",
+    "def ingest():\n    f = open\n    f(p, 'w')",
+    "def ingest():\n    replace(a, b)",
+    "def ingest():\n    (lambda: p.unlink())()",
+    # An allowed call used from the wrong function is still a violation.
+    "def ingest():\n    p.unlink()",
+    "def _stage():\n    p.unlink()",
+    "def _rollback():\n    shutil.rmtree(d)",
+    "def ingest():\n    open(p, 'xb')",
+]
+# Aliasing and importing: caught because the package may import only what it lists.
+BAD_IMPORT_SNIPPETS = [
+    "from os import replace\nreplace(a, b)",
+    "import os as o\no.remove(x)",
+    "import os",
+    "from shutil import rmtree as rt\nrt(d)",
+    "import shutil",
+    "import subprocess",
+    "from subprocess import run",
+    "import functools",
+    "import operator",
+    "import importlib",
+    "from pathlib import PurePath",
+    "from . import secret",
+    "import builtins",
+]
+GOOD_SNIPPETS = [
+    "def _read():\n    return open('x', 'rb').read()\n",
+    "def _norm(t):\n    return t.replace('a', 'b')\n",
+    "def _read():\n    return p.open('r').read()\n",
+    "def _rollback(files):\n    for f in files:\n        f.unlink()\n",
+    "def _create_exclusive(p, d, c):\n    with open(p, 'xb') as f:\n        f.write(d)\n",
+    "def parse():\n    return zipfile.ZipFile(io.BytesIO(data))\n",
+    "def read_part():\n    with archive.open(info) as part:\n        return part.read(10)\n",
+    "from pathlib import Path\nimport re\n",
+]
+
+
 def test_the_d19_scanner_catches_every_way_to_modify_or_delete():
-    # Test the test: each of these is a real way to alter an existing source.
-    bad_snippets = [
-        "def ingest():\n    Path('x').write_text('a')",
-        "def ingest():\n    Path('x').unlink()",
-        "def ingest():\n    shutil.rmtree('sources')",
-        "def ingest():\n    os.replace('a', 'b')",
-        "def ingest():\n    path.replace(target)",
-        "def ingest():\n    os.remove('a')",
-        "def ingest():\n    open('x', 'w')",
-        "def ingest():\n    open('x', mode='a')",
-        "def ingest():\n    open('x', 'r+b')",
-        "def ingest():\n    p.open('wb')",
-        "def ingest():\n    os.open('x', os.O_WRONLY)",
-        "def ingest():\n    shutil.move('a', 'b')",
-        "def ingest():\n    shutil.copyfile('a', 'b')",
-        "def ingest():\n    zipfile.ZipFile('x', 'w')",
-        "def ingest():\n    getattr(os, 'remove')('a')",
-        "def ingest():\n    Path('x').touch()",
-        "def ingest():\n    f.truncate()",
-        "def ingest():\n    subprocess.run(['rm', 'x'])",
-        # An allowed call used from the wrong function is still a violation.
-        "def ingest():\n    p.unlink()",
-        "def _stage():\n    p.unlink()",
-        "def _rollback():\n    shutil.rmtree(d)",
-        "def ingest():\n    open(p, 'xb')",
-    ]
-    for snippet in bad_snippets:
+    # Test the test, including the aliased and indirect forms a name-based
+    # scanner misses.
+    for snippet in BAD_CALL_SNIPPETS:
+        assert mutation_violations(snippet, check_imports=False), snippet
+    for snippet in BAD_IMPORT_SNIPPETS:
         assert mutation_violations(snippet), snippet
-    good_snippets = [
-        "def _read():\n    return open('x', 'rb').read()\n",
-        "def _norm(t):\n    return t.replace('a', 'b')\n",
-        "def _read():\n    return p.open('r').read()\n",
-        "def _rollback(files):\n    for f in files:\n        f.unlink()\n",
-        "def _create_exclusive(p, d, c):\n    with open(p, 'xb') as f:\n        f.write(d)\n",
-        "def parse():\n    return zipfile.ZipFile(io.BytesIO(data))\n",
-    ]
-    for snippet in good_snippets:
+    for snippet in GOOD_SNIPPETS:
         assert mutation_violations(snippet) == [], snippet
 
 
@@ -984,3 +1128,371 @@ def test_no_ingest_path_modifies_or_deletes_an_existing_source(repo, incoming, t
         after = snapshot(repo)
         assert {k: after.get(k) for k in existing} == existing  # nothing changed or vanished
         assert {k: v for k, v in mtimes(repo).items() if k in stamps} == stamps
+
+
+# ======================================================= fix round 1: new tests
+
+
+def zip_with(parts: dict) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        for name, content in parts.items():
+            archive.writestr(name, content)
+    return buffer.getvalue()
+
+
+# ---- VTT: a speaker is credited only for text inside their own <v> span
+
+
+def test_vtt_text_after_a_closing_voice_tag_is_not_credited_to_that_speaker():
+    # The reported fabrication: "and then B said we must" was attributed to A.
+    text = (
+        "WEBVTT\n\n00:00:01.000 --> 00:00:04.000\n"
+        "<v A>hello</v> and then B said we must <v B>yes</v> trailing\n"
+    )
+    assert parse_vtt(text) == [
+        ("A", "hello"),
+        ("#", "and then B said we must"),
+        ("B", "yes"),
+        ("#", "trailing"),
+    ]
+
+
+def test_vtt_text_before_the_first_voice_tag_is_structural():
+    text = "WEBVTT\n\n00:00:01.000 --> 00:00:04.000\n[laughter] <v A>fine</v>\n"
+    assert parse_vtt(text) == [("#", "[laughter]"), ("A", "fine")]
+
+
+def test_vtt_an_unclosed_voice_runs_to_the_end_of_its_cue_only():
+    text = (
+        "WEBVTT\n\n00:00:01.000 --> 00:00:04.000\n<v A>one\ntwo\n\n"
+        "00:00:05.000 --> 00:00:06.000\nplain words\n"
+    )
+    assert parse_vtt(text) == [("A", "one two"), ("#", "plain words")]
+
+
+def test_vtt_a_stray_closing_tag_with_no_open_voice_is_harmless():
+    text = "WEBVTT\n\n00:00:01.000 --> 00:00:04.000\nhello</v> there\n"
+    assert parse_vtt(text) == [("#", "hello"), ("#", "there")]
+
+
+def test_vtt_markup_inside_a_voice_span_does_not_end_it():
+    text = "WEBVTT\n\n00:00:01.000 --> 00:00:04.000\n<v A>a <b>bold</b> <00:00:02.000>claim</v>\n"
+    assert parse_vtt(text) == [("A", "a bold claim")]
+
+
+# ---- VTT: block keywords match whole words, so no cue is silently dropped
+
+
+def test_vtt_cue_identifiers_that_merely_start_with_a_skip_keyword_are_kept():
+    text = (
+        "WEBVTT\n\n"
+        "NOTEBOOK-1\n00:00:01.000 --> 00:00:02.000\n<v A>first</v>\n\n"
+        "STYLEGUIDE\n00:00:03.000 --> 00:00:04.000\n<v B>second</v>\n\n"
+        "REGIONAL\n00:00:05.000 --> 00:00:06.000\n<v C>third</v>\n"
+    )
+    assert parse_vtt(text) == [("A", "first"), ("B", "second"), ("C", "third")]
+
+
+def test_vtt_real_note_style_and_region_blocks_are_still_skipped():
+    text = (
+        "WEBVTT\n\nNOTE\njust a comment\n\nNOTE\tinline comment\n\n"
+        "STYLE\n::cue { color: red }\n\nREGION\nid:one\n\n"
+        "00:00:01.000 --> 00:00:02.000\n<v A>kept</v>\n"
+    )
+    assert parse_vtt(text) == [("A", "kept")]
+
+
+@pytest.mark.parametrize("header", ["WEBVTTfoo", "WEBVT", "XWEBVTT", ""])
+def test_vtt_header_must_be_the_webvtt_keyword(header):
+    with pytest.raises(ValidationFailed, match="WEBVTT"):
+        parse_vtt(f"{header}\n\n00:00:01.000 --> 00:00:02.000\n<v A>x</v>\n")
+
+
+@pytest.mark.parametrize("header", ["WEBVTT", "WEBVTT - My title", "WEBVTT\tnote"])
+def test_vtt_header_may_carry_a_title(header):
+    assert parse_vtt(f"{header}\n\n00:00:01.000 --> 00:00:02.000\n<v A>x</v>\n") == [("A", "x")]
+
+
+# ---- TXT: no invented speakers
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "note to self: buy milk",
+        "Remember to call Bob: urgent",
+        "five Capital Words In A Label: text",
+        "Action Item Owner Review Notes: text",
+        "lowercase name: text",
+        "ops lead: text",
+    ],
+)
+def test_txt_label_shapes_that_are_not_names_stay_structural(line):
+    assert parse_txt(line + "\n") == [("#", line)]
+
+
+@pytest.mark.parametrize(
+    "line, speaker, text",
+    [
+        ("Speaker 1: hello", "Speaker 1", "hello"),
+        ("Dr. Ada Lovelace: yes", "Dr. Ada Lovelace", "yes"),
+        ("Mary-Jane O'Neil: yes", "Mary-Jane O'Neil", "yes"),
+        ("Sam: ", "Sam", ""),
+        ("Sam:", "Sam", ""),
+        ("A B C D: four words", "A B C D", "four words"),
+    ],
+)
+def test_txt_name_shaped_labels_are_attributed(line, speaker, text):
+    assert parse_txt(line + "\n") == [(speaker, text)]
+
+
+# ---- DOCX: text boxes appear once; hostile XML and oversized parts are refused
+
+BOX = "<w:p><w:r><w:t>Sam Ellis: Export it.</w:t></w:r></w:p>"
+ALTERNATE_CONTENT = (
+    "<mc:AlternateContent>"
+    f'<mc:Choice Requires="wps"><w:drawing><w:txbxContent>{BOX}</w:txbxContent></w:drawing></mc:Choice>'
+    f"<mc:Fallback><w:pict><w:txbxContent>{BOX}</w:txbxContent></w:pict></mc:Fallback>"
+    "</mc:AlternateContent>"
+)
+
+
+def test_docx_text_box_in_choice_and_fallback_is_read_once():
+    data = io.BytesIO()
+    make_docx(data, ["Before", f"<w:p><w:r>{ALTERNATE_CONTENT}</w:r></w:p>", "After"])
+    # Twice would make Task 10's anchor ambiguous and the quote unanchorable.
+    assert parse_docx(data.getvalue()) == [
+        ("#", "Before"),
+        ("Sam Ellis", "Export it."),
+        ("#", "After"),
+    ]
+
+
+def test_docx_text_box_text_is_not_also_glued_onto_its_host_paragraph():
+    host = f"<w:p><w:r><w:t>Host</w:t></w:r><w:r>{ALTERNATE_CONTENT}</w:r></w:p>"
+    data = io.BytesIO()
+    make_docx(data, [host])
+    assert parse_docx(data.getvalue()) == [("#", "Host"), ("Sam Ellis", "Export it.")]
+
+
+DOCTYPE_BOMB = (
+    '<!DOCTYPE w:document [<!ENTITY a "aaaa"><!ENTITY b "&a;&a;&a;&a;"><!ENTITY c "&b;&b;&b;&b;">]>'
+    f'<w:document xmlns:w="{W_NS}"><w:body><w:p><w:r><w:t>&c;</w:t></w:r></w:p></w:body></w:document>'
+)
+
+
+def _utf16(document: str) -> bytes:
+    return ('<?xml version="1.0" encoding="UTF-16"?>' + document).encode("utf-16")
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        ('<?xml version="1.0"?>' + DOCTYPE_BOMB).encode("utf-8"),
+        _utf16(DOCTYPE_BOMB),
+        # A DOCTYPE with no entity at all is refused too: Word never writes one.
+        f'<!DOCTYPE w:document><w:document xmlns:w="{W_NS}"><w:body/></w:document>'.encode("utf-8"),
+        _utf16(f'<!DOCTYPE w:document><w:document xmlns:w="{W_NS}"><w:body/></w:document>'),
+    ],
+    ids=["utf8-entities", "utf16-entities", "utf8-doctype", "utf16-doctype"],
+)
+def test_docx_with_a_doctype_or_entity_declaration_is_refused(document):
+    with pytest.raises(ValidationFailed, match="DOCTYPE"):
+        parse_docx(zip_with({"word/document.xml": document}))
+
+
+def test_the_utf16_documents_really_defeat_a_search_of_the_raw_bytes():
+    # Why the guard is expat's declaration handlers and not a byte search.
+    assert b"<!DOCTYPE" not in _utf16(DOCTYPE_BOMB)
+    assert b"DOCTYPE" not in _utf16(DOCTYPE_BOMB)
+
+
+def test_docx_doctype_in_core_properties_is_refused_by_inspect_metadata(incoming):
+    core = _utf16(f'<!DOCTYPE cp:coreProperties [<!ENTITY a "b">]><cp:coreProperties xmlns:cp="{W_NS}"/>')
+    path = incoming / "hostile.docx"
+    path.write_bytes(zip_with({"word/document.xml": b"<x/>", "docProps/core.xml": core}))
+    with pytest.raises(ValidationFailed, match="DOCTYPE"):
+        inspect_metadata(path)
+
+
+def test_docx_part_larger_than_the_cap_is_refused(incoming, monkeypatch):
+    import merit.ingest.docx as docx_module
+
+    monkeypatch.setattr(docx_module, "MAX_PART_BYTES", 200)
+    big = f'<w:document xmlns:w="{W_NS}"><w:body>' + "<w:p/>" * 100 + "</w:body></w:document>"
+    data = zip_with({"word/document.xml": big})
+    with pytest.raises(ValidationFailed, match="larger than"):
+        parse_docx(data)
+    path = incoming / "big-core.docx"
+    path.write_bytes(zip_with({"word/document.xml": b"<x/>", "docProps/core.xml": "<c/>" + " " * 400}))
+    with pytest.raises(ValidationFailed, match="larger than"):
+        inspect_metadata(path)
+
+
+# ---- ingest: the no-op must verify the bundle it claims is there
+
+
+def _damage(repo, how):
+    stem = "2026-09-12-interview"
+    md = repo / "sources" / f"{stem}.md"
+    raw = repo / "sources" / "raw" / "interview.vtt"
+    meta_path = repo / "sources" / f"{stem}.meta.yaml"
+    meta = yaml.safe_load(meta_path.read_text(encoding="utf-8"))
+    if how == "delete_canonical":
+        md.unlink()
+        return f"sources/{stem}.md"
+    if how == "edit_canonical":
+        md.write_bytes(md.read_bytes().replace(b"spreadsheet", b"SPREADSHEET"))
+        return f"sources/{stem}.md"
+    if how == "delete_original":
+        raw.unlink()
+        return "sources/raw/interview.vtt"
+    if how == "edit_original":
+        raw.write_bytes(raw.read_bytes() + b"\r\n")
+        return "sources/raw/interview.vtt"
+    if how == "drop_bundle_hash":
+        del meta["bundle_sha256"]
+    elif how == "tamper_attribution":
+        meta["authored_by"] = "someone-else"  # bundle_sha256 no longer matches
+    meta_path.write_text(yaml.safe_dump(meta, sort_keys=False), encoding="utf-8")
+    return f"sources/{stem}.meta.yaml"
+
+
+@pytest.mark.parametrize(
+    "how",
+    [
+        "delete_canonical",
+        "edit_canonical",
+        "delete_original",
+        "edit_original",
+        "drop_bundle_hash",
+        "tamper_attribution",
+    ],
+)
+def test_re_ingesting_a_damaged_bundle_is_an_error_naming_the_damaged_path(repo, incoming, how):
+    original = write_vtt(incoming)
+    ingest(repo, original, **KWARGS)
+    damaged = _damage(repo, how)
+    before, stamps = snapshot(repo), age_files(repo)
+
+    with pytest.raises(ValidationFailed) as exc:
+        ingest(repo, original, **KWARGS)
+
+    assert damaged in str(exc.value)
+    assert "git checkout" in exc.value.fix and damaged in exc.value.fix
+    assert snapshot(repo) == before and mtimes(repo) == stamps  # still writes nothing
+
+
+def test_an_intact_bundle_still_no_ops(repo, incoming):
+    original = write_vtt(incoming)
+    first = ingest(repo, original, **KWARGS)
+    assert ingest(repo, original, **KWARGS).created is False
+    assert first.bundle_sha256 == load_sidecar(repo, "2026-09-12-interview")["bundle_sha256"]
+
+
+def test_cli_reports_a_damaged_bundle_as_exit_1_with_a_restore_command(repo, incoming, monkeypatch, capsys):
+    monkeypatch.chdir(repo)
+    original = write_vtt(incoming)
+    cli.main(cli_args(original))
+    capsys.readouterr()
+    _damage(repo, "delete_canonical")
+    assert cli.main(cli_args(original)) == int(ExitCode.VALIDATION)
+    err = capsys.readouterr().err
+    assert "2026-09-12-interview.md" in err and "git checkout" in err
+
+
+# ---- ingest: identical content with different attribution is not a silent no-op
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("record_type", "minutes"),
+        ("classification", "PUBLIC"),
+        ("participants", [{"name": "Someone Else", "role": "user"}]),
+        ("authored_by", "sam"),
+    ],
+)
+def test_identical_content_with_different_attribution_is_refused_naming_the_field(
+    repo, incoming, field, value
+):
+    original = write_vtt(incoming)
+    ingest(repo, original, **KWARGS)
+    before, stamps = snapshot(repo), age_files(repo)
+
+    with pytest.raises(UsageError) as exc:
+        ingest(repo, original, **{**KWARGS, field: value})
+
+    assert field in str(exc.value)
+    assert "supersede" in str(exc.value)
+    assert "--as" in exc.value.fix
+    assert snapshot(repo) == before and mtimes(repo) == stamps
+
+
+def test_weakening_record_type_on_re_ingest_cannot_slip_through(repo, incoming):
+    # The reason the check exists: V9 demands confirmation for a self-recorded
+    # note, and a silent no-op would keep whichever value was recorded first.
+    original = write_vtt(incoming)
+    ingest(repo, original, **{**KWARGS, "record_type": "self_recorded_note"})
+    with pytest.raises(UsageError, match="record_type"):
+        ingest(repo, original, **{**KWARGS, "record_type": "transcript"})
+    assert load_sidecar(repo, "2026-09-12-interview")["record_type"] == "self_recorded_note"
+
+
+def test_who_ingested_and_when_may_differ_on_a_re_ingest(repo, incoming):
+    original = write_vtt(incoming)
+    ingest(repo, original, **KWARGS)
+    again = ingest(
+        repo, original, **{**KWARGS, "ingested_by": "sam", "ingested_on": datetime.date(2027, 1, 1)}
+    )
+    assert again.created is False
+
+
+# ---- robustness of the failure paths
+
+
+def test_a_failed_rollback_says_which_files_it_could_not_remove(repo, incoming, monkeypatch):
+    original = write_vtt(incoming)
+    _fail_on_call(monkeypatch, 3)
+
+    def stuck(self, *args, **kwargs):
+        raise PermissionError("locked")
+
+    monkeypatch.setattr(Path, "unlink", stuck)
+    with pytest.raises(OSError) as exc:
+        ingest(repo, original, **KWARGS)
+    message = str(exc.value)
+    assert "injected" in message  # the original failure is still there
+    assert "interview.vtt" in message and "2026-09-12-interview.md" in message
+    assert "by hand" in message
+
+
+def test_collision_wording_does_not_claim_different_content_for_a_stray_identical_file(repo, incoming):
+    original = write_vtt(incoming)
+    (repo / "sources" / "raw" / "interview.vtt").write_bytes(original.read_bytes())
+    with pytest.raises(UsageError) as exc:
+        ingest(repo, original, **KWARGS)
+    assert "different content" not in str(exc.value)
+    assert "sources/raw/interview.vtt" in str(exc.value)
+
+
+@pytest.mark.parametrize("bad", ["2026-10-18", datetime.datetime(2026, 10, 18, 9, 0), 20261018])
+def test_ingested_on_must_be_a_real_date(repo, incoming, bad):
+    # A string that merely looks like a date would hash differently from the
+    # equivalent datetime.date: two bundle hashes for one logical value.
+    before = snapshot(repo)
+    with pytest.raises(UsageError, match="ingested_on"):
+        ingest(repo, write_vtt(incoming), **{**KWARGS, "ingested_on": bad})
+    assert snapshot(repo) == before
+
+
+def test_cli_fix_commands_quote_an_origin_path_with_spaces(repo, tmp_path, monkeypatch, capsys):
+    folder = tmp_path / "my folder"
+    folder.mkdir()
+    original = write_vtt(folder)
+    monkeypatch.chdir(repo)
+    assert cli.main(["ingest", str(original)]) == int(ExitCode.USAGE)
+    assert '"' + str(original) + '"' in capsys.readouterr().err
+    assert cli.main(cli_args(original, "--participant", "no-role")) == int(ExitCode.USAGE)
+    assert '"' + str(original) + '"' in capsys.readouterr().err

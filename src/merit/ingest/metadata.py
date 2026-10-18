@@ -8,11 +8,9 @@ before anything is written.
 
 from __future__ import annotations
 
-import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from merit.errors import ValidationFailed
-from merit.ingest.docx import read_part
+from merit.ingest.docx import read_xml_part
 
 _CORE_PART = "docProps/core.xml"
 _CP = "{http://schemas.openxmlformats.org/package/2006/metadata/core-properties}"
@@ -33,16 +31,7 @@ def inspect_metadata(path: Path) -> dict[str, str | None]:
     path = Path(path)
     if path.suffix.lower() != ".docx":
         return {}
-    xml = read_part(path.read_bytes(), _CORE_PART)
-    root = None
-    if xml is not None:
-        try:
-            root = ET.fromstring(xml)
-        except ET.ParseError as exc:
-            raise ValidationFailed(
-                f"{path} has a malformed {_CORE_PART} ({exc})",
-                fix="re-save the document as .docx from Word and re-run `merit ingest --inspect-metadata`",
-            ) from exc
+    root = read_xml_part(path.read_bytes(), _CORE_PART)
     report: dict[str, str | None] = {}
     for key, tag in _CORE_FIELDS.items():
         element = root.find(tag) if root is not None else None

@@ -6,6 +6,7 @@ import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from subprocess import list2cmdline
 
 from merit import doctor as doctor_module
 from merit.config import find_repo_root
@@ -32,6 +33,10 @@ def _doctor(args: argparse.Namespace) -> int | None:
     if any(f.startswith(doctor_module.ERROR) for f in findings):
         return int(ExitCode.ENVIRONMENT)
     return None
+
+
+def _quote(path: Path) -> str:
+    return list2cmdline([str(path)])
 
 
 def _inspect(origin: Path) -> None:
@@ -61,14 +66,14 @@ def _ingest(args: argparse.Namespace) -> int | None:
     if missing:
         raise UsageError(
             f"merit ingest needs {', '.join(missing)}.",
-            fix=f"merit ingest {origin} " + " ".join(f"{flag} <value>" for flag in missing),
+            fix=f"merit ingest {_quote(origin)} " + " ".join(f"{flag} <value>" for flag in missing),
         )
     try:
         session_date = datetime.date.fromisoformat(args.session_date)
     except ValueError:
         raise UsageError(
             f"--session-date {args.session_date!r} is not a YYYY-MM-DD date.",
-            fix=f"merit ingest {origin} --session-date YYYY-MM-DD (same other options)",
+            fix=f"merit ingest {_quote(origin)} --session-date YYYY-MM-DD (same other options)",
         ) from None
     participants = []
     for entry in args.participant:
@@ -76,7 +81,7 @@ def _ingest(args: argparse.Namespace) -> int | None:
         if not name.strip() or not role.strip():
             raise UsageError(
                 f"--participant {entry!r} must look like \"Name=role\".",
-                fix=f"merit ingest {origin} --participant \"Jordan Reyes=user\" (same other options)",
+                fix=f"merit ingest {_quote(origin)} --participant \"Jordan Reyes=user\" (same other options)",
             )
         participants.append({"name": name.strip(), "role": role.strip()})
     result = ingest_source(

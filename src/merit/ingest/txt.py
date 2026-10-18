@@ -1,9 +1,20 @@
 """Plain-text intake: ``Name: text`` is attributed, anything else is structural.
 
-Speaker attribution is structural, never inferred: a line is attributed only
-when it starts with a name-shaped prefix (one to four words, each beginning
-with a letter) followed by a colon and a space. Everything else, including
-``Meeting at 10:30: kickoff`` and ``see http://x``, becomes a ``#`` line.
+Speaker attribution is structural, never inferred, and the one failure this
+product cannot tolerate is an invented attribution. So a line is attributed
+only when its prefix looks like a name label and nothing looser:
+
+* one to four words, then a colon and a space (or the end of the line);
+* the first word begins with a capital letter;
+* every other word begins with a capital letter or is all digits
+  ("Speaker 1"), so ``note to self: x`` and ``Remember to call Bob: x`` are
+  not speakers.
+
+Everything else, including ``Meeting at 10:30: kickoff`` and URLs, becomes a
+``#`` line. The price is that a legitimate label outside this shape (a
+lower-case particle as in "Ludwig van Beethoven", or five words) is treated as
+structural. That is the safe direction: the line is still ingested and still
+shows up in ``merit citations``, it just carries no speaker.
 """
 
 from __future__ import annotations
@@ -12,17 +23,21 @@ import re
 
 from merit.ingest.canonical import STRUCTURAL_SPEAKER
 
-# A word starts with a letter (so "10:30" is not a name) and may contain digits,
-# periods, hyphens and apostrophes. The escape u+2019 is the typographic apostrophe; it is
-# written as an escape on purpose, as this repo's sources are pure ASCII.
-_WORD = r"[^\W\d_][\w.'\u2019-]*"
+# The apostrophe class includes the typographic apostrophe, written as an
+# escape on purpose: this repo's sources are pure ASCII.
+_WORD = r"[\w.'\u2019-]+"
 _SPEAKER = re.compile(rf"(?P<name>{_WORD}(?: {_WORD}){{0,3}}):(?: (?P<text>.*))?")
+
+
+def _is_name(label: str) -> bool:
+    first, *rest = label.split(" ")
+    return first[0].isupper() and all(word[0].isupper() or word.isdigit() for word in rest)
 
 
 def split_speaker(line: str) -> tuple[str, str]:
     """Return ``(speaker, text)`` for one already-stripped, non-empty line."""
     match = _SPEAKER.fullmatch(line)
-    if match is None:
+    if match is None or not _is_name(match.group("name")):
         return STRUCTURAL_SPEAKER, line
     return match.group("name"), (match.group("text") or "").strip()
 

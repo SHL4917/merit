@@ -1,4 +1,11 @@
-"""WebVTT intake: map ``<v Speaker>`` voice spans, drop timing and cue metadata."""
+"""WebVTT intake: map ``<v Speaker>`` voice spans, drop timing and cue metadata.
+
+Attribution is structural: text is credited to a speaker only while a
+``<v Speaker>`` span is open. ``</v>`` closes it, and any text after that (or
+before the first ``<v>``) is a ``#`` line. Crediting trailing text to the
+previous speaker would write words into someone's mouth, and every later check
+trusts the canonical file's labels.
+"""
 
 from __future__ import annotations
 
@@ -9,10 +16,14 @@ from merit.errors import ValidationFailed
 from merit.ingest.canonical import STRUCTURAL_SPEAKER
 
 _BLOCK_BREAK = re.compile(r"\n[ \t]*\n+")
-# <v Name>, optionally with classes: <v.loud Name>.
-_VOICE = re.compile(r"<v(?:\.[^\s>]*)*[ \t]+([^>]*)>")
+# The header line is "WEBVTT" alone or followed by whitespace and text.
+_HEADER = re.compile(r"WEBVTT(?:[ \t]|$)")
+# A NOTE/STYLE/REGION block starts with the keyword as a whole word; an
+# identifier like NOTEBOOK-1 is an ordinary cue.
+_SKIPPED_BLOCK = re.compile(r"(?:NOTE|STYLE|REGION)(?:[ \t]|$)")
+# Either <v Name> (optionally with classes, <v.loud Name>) or the closing </v>.
+_VOICE_TOKEN = re.compile(r"<v(?:\.[^\s>]*)*[ \t]+([^>]*)>|</v>")
 _TAG = re.compile(r"<[^>]*>")
-_SKIPPED_BLOCKS = ("NOTE", "STYLE", "REGION")
 
 
 def _fail(why: str) -> ValidationFailed:
@@ -27,31 +38,43 @@ def _clean(fragment: str) -> str:
     return " ".join(html.unescape(_TAG.sub("", fragment)).split())
 
 
+def _cue_utterances(payload: str) -> list[tuple[str, str]]:
+    utterances: list[tuple[str, str]] = []
+    speaker = STRUCTURAL_SPEAKER
+    position = 0
+
+    def emit(fragment: str) -> None:
+        spoken = _clean(fragment)
+        if spoken:
+            utterances.append((speaker, spoken))
+
+    for token in _VOICE_TOKEN.finditer(payload):
+        emit(payload[position : token.start()])
+        position = token.end()
+        # group(1) is None for </v>; an empty name is also unattributed.
+        name = html.unescape(token.group(1) or "").strip()
+        speaker = name or STRUCTURAL_SPEAKER
+    emit(payload[position:])
+    return utterances
+
+
 def parse_vtt(text: str) -> list[tuple[str, str]]:
     """Parse normalised WebVTT into ``(speaker, text)`` utterances.
 
-    A cue's wrapped lines are joined into one utterance per voice span. Text
-    outside any voice span is structural: a speaker is never guessed.
+    A cue's wrapped lines are joined, then split into one utterance per
+    stretch of text between voice tokens.
     """
     blocks = _BLOCK_BREAK.split(text.strip("\n"))
-    if not blocks or not blocks[0].startswith("WEBVTT"):
+    if not _HEADER.match(blocks[0]):
         raise _fail("it does not begin with a WEBVTT header")
     utterances: list[tuple[str, str]] = []
     for block in blocks[1:]:
         lines = block.split("\n")
-        if lines[0].startswith(_SKIPPED_BLOCKS):
+        if _SKIPPED_BLOCK.match(lines[0]):
             continue
         timing = next((i for i, line in enumerate(lines) if "-->" in line), None)
         if timing is None:
             raise _fail(f"a block has no timing line: {lines[0]!r}")
         payload = " ".join(line.strip() for line in lines[timing + 1 :])
-        # re.split with one group yields [text, name, text, name, text, ...].
-        parts = _VOICE.split(payload)
-        leading = _clean(parts[0])
-        if leading:
-            utterances.append((STRUCTURAL_SPEAKER, leading))
-        for name, spoken in zip(parts[1::2], parts[2::2]):
-            spoken = _clean(spoken)
-            if spoken:
-                utterances.append((html.unescape(name).strip() or STRUCTURAL_SPEAKER, spoken))
+        utterances.extend(_cue_utterances(payload))
     return utterances

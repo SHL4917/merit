@@ -14,6 +14,11 @@ other function gains one:
 * ``_rollback``         removes only the files and directories this very run
                         created, when a later step fails.
 
+The test's static scan is a regression detector (a closed import allow-list
+plus a ban on mutating names outside those four functions), not a defence
+against a determined author: nothing static ties ``_rollback``'s unlink to
+"only paths this run created". The behavioural tests carry that guarantee.
+
 Atomicity: collisions are decided before any work; everything is built and
 verified in a staging directory; only then is it placed in the repo.
 Identity is decided by content, not filename. Re-ingesting what is already
@@ -25,17 +30,17 @@ from __future__ import annotations
 
 import datetime
 import re
-import subprocess
 import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from subprocess import list2cmdline
 from typing import Any
 
 import yaml
 
 import merit
-from merit.config import load_config
+from merit.config import Config, load_config
 from merit.errors import UsageError, ValidationFailed
 from merit.ingest.bundle import IMMUTABLE_META_FIELDS, bundle_sha256
 from merit.ingest.canonical import (
@@ -56,6 +61,9 @@ SUPPORTED_SUFFIXES = (".vtt", ".docx", ".txt")
 # --as names become a filename and a slug: no separators, nothing hidden.
 _AS_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 _MAX_LINES = 9999
+# The attribution D11 protects. ingested_by and ingested_on are deliberately
+# absent: they legitimately differ on a later re-ingest.
+_DIVERGENT_FIELDS = ("record_type", "classification", "participants", "authored_by")
 
 
 @dataclass(frozen=True)
@@ -73,11 +81,20 @@ class IngestResult:
 
 
 def _quote(path: Path | str) -> str:
-    return subprocess.list2cmdline([str(path)])
+    # Imported by name, not as the subprocess module: nothing here can spawn a process.
+    return list2cmdline([str(path)])
 
 
-def _check_inputs(config, origin: Path, fields: dict[str, Any]) -> None:
-    rerun = f"merit ingest {_quote(origin)} --record-type <type> --authored-by <name> --session-date <YYYY-MM-DD> --classification <level> --ingested-by <name>"
+def _is_date(value: object) -> bool:
+    """A real ``datetime.date``. A datetime or a date-looking string would hash differently."""
+    return isinstance(value, datetime.date) and not isinstance(value, datetime.datetime)
+
+
+def _check_inputs(config: Config, origin: Path, fields: dict[str, Any]) -> None:
+    rerun = (
+        f"merit ingest {_quote(origin)} --record-type <type> --authored-by <name> "
+        "--session-date <YYYY-MM-DD> --classification <level> --ingested-by <name>"
+    )
     record_type = fields["record_type"]
     if record_type not in RECORD_TYPES:
         raise UsageError(
@@ -95,9 +112,10 @@ def _check_inputs(config, origin: Path, fields: dict[str, Any]) -> None:
         value = fields[key]
         if not isinstance(value, str) or not value.strip():
             raise UsageError(f"{key} must be a non-empty name.", fix=rerun)
-    session_date = fields["session_date"]
-    if not isinstance(session_date, datetime.date) or isinstance(session_date, datetime.datetime):
-        raise UsageError("session_date must be a date (YYYY-MM-DD).", fix=rerun)
+    for key in ("session_date", "ingested_on"):
+        value = fields[key]
+        if not (_is_date(value) or (key == "ingested_on" and value is None)):
+            raise UsageError(f"{key} must be a date (YYYY-MM-DD), got {value!r}.", fix=rerun)
     for participant in fields["participants"]:
         ok = (
             isinstance(participant, dict)
@@ -176,7 +194,7 @@ def _existing_paths(paths: Sequence[Path]) -> list[Path]:
     return [p for p in paths if p.exists()]
 
 
-def _already_ingested(sidecar: Path, origin_digest: str, canonical_digest: str) -> dict | None:
+def _identical_sidecar(sidecar: Path, origin_digest: str, canonical_digest: str) -> dict | None:
     """The existing sidecar if it carries both incoming digests, else None."""
     try:
         meta = yaml.safe_load(sidecar.read_text(encoding="utf-8"))
@@ -187,6 +205,78 @@ def _already_ingested(sidecar: Path, origin_digest: str, canonical_digest: str) 
     if meta.get("origin_sha256") == origin_digest and meta.get("sha256") == canonical_digest:
         return meta
     return None
+
+
+def _digest(path: Path, kind: str) -> str | None:
+    """Digest of an existing file by the rule its sidecar pin uses; None if unreadable."""
+    try:
+        data = path.read_bytes()
+        return sha256_bytes(data) if kind == "bytes" else sha256_text(data.decode("utf-8"))
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _first_damage(repo_root: Path, meta: dict, sidecar_rel: str) -> tuple[str, str] | None:
+    """Read-only integrity check of an existing bundle: (path, problem) or None.
+
+    A no-op may only claim "already ingested" if the bundle is still intact:
+    both files exist and match their pins, and the bundle hash recomputes.
+    """
+    for rel, pin, kind in (
+        (meta.get("origin"), "origin_sha256", "bytes"),
+        (meta.get("source"), "sha256", "text"),
+    ):
+        if not isinstance(rel, str):
+            return sidecar_rel, f"does not name its {'original' if kind == 'bytes' else 'canonical'} file"
+        path = repo_root / rel
+        if not path.is_file():
+            return rel, "is missing"
+        if _digest(path, kind) != meta.get(pin):
+            return rel, f"no longer matches the {pin} recorded in {sidecar_rel}"
+    try:
+        intact = bundle_sha256(meta) == meta.get("bundle_sha256")
+    except (ValueError, TypeError):
+        intact = False
+    if not intact:
+        return sidecar_rel, "has a bundle_sha256 that does not match its own fields"
+    return None
+
+
+def _no_op_or_raise(
+    repo_root: Path,
+    origin: Path,
+    meta: dict,
+    supplied: dict[str, Any],
+    rel_meta: str,
+) -> IngestResult:
+    """Content is identical to an existing bundle: confirm it is intact and attributed the same.
+
+    Raises if the bundle is damaged (we cannot say "already ingested") or if the
+    supplied attribution differs from what was recorded (a silent no-op would
+    keep the old value, e.g. the weaker record_type). Writes nothing either way.
+    """
+    damage = _first_damage(repo_root, meta, rel_meta)
+    if damage is not None:
+        path, problem = damage
+        raise ValidationFailed(
+            f"{origin} is already ingested, but {path} {problem}. Sources are immutable, "
+            "so the existing bundle cannot be repaired by ingesting again.",
+            fix=f"git checkout -- {_quote(path)}",
+        )
+    divergent = [
+        f"{key} (recorded {meta.get(key)!r}, supplied {supplied[key]!r})"
+        for key in _DIVERGENT_FIELDS
+        if meta.get(key) != supplied[key]
+    ]
+    if divergent:
+        raise UsageError(
+            f"{origin} is already ingested as {meta['source']}, but the attribution differs: "
+            f"{'; '.join(divergent)}. Nothing is rewritten, and keeping the recorded value silently "
+            "could weaken a confirmation requirement. To record this file under different "
+            "attribution, ingest it under a new name; to correct the recorded one, supersede the source.",
+            fix=f"merit ingest {_quote(origin)} --as <new-name> (same other options)",
+        )
+    return IngestResult(False, meta["source"], meta["origin"], rel_meta, meta["bundle_sha256"])
 
 
 # ----------------------------------------------------------- filesystem choke points
@@ -216,18 +306,23 @@ def _create_exclusive(path: Path, data: bytes, created: list[Path]) -> None:
         handle.write(data)
 
 
-def _rollback(created_files: list[Path], created_dirs: list[Path]) -> None:
-    """Undo this run's own creations; never touches anything it did not create."""
+def _rollback(created_files: list[Path], created_dirs: list[Path]) -> list[Path]:
+    """Undo this run's own creations; never touches anything it did not create.
+
+    Returns the paths it could not remove, so the caller can say so.
+    """
+    leftover: list[Path] = []
     for path in reversed(created_files):
         try:
             path.unlink()
         except OSError:
-            pass
+            leftover.append(path)
     for directory in reversed(created_dirs):
         try:
             directory.rmdir()
         except OSError:
-            pass
+            leftover.append(directory)
+    return leftover
 
 
 def _place(staged: Sequence[tuple[Path, Path]]) -> None:
@@ -237,8 +332,14 @@ def _place(staged: Sequence[tuple[Path, Path]]) -> None:
         for source, destination in staged:
             _ensure_dir(destination.parent, created_dirs)
             _create_exclusive(destination, source.read_bytes(), created_files)
-    except BaseException:
-        _rollback(created_files, created_dirs)
+    except BaseException as failure:
+        leftover = _rollback(created_files, created_dirs)
+        if leftover and isinstance(failure, Exception):
+            names = ", ".join(str(p) for p in leftover)
+            raise OSError(
+                f"{failure}. Rollback could not remove what this run created, so a partial "
+                f"bundle remains; delete these by hand before retrying: {names}"
+            ) from failure
         raise
 
 
@@ -277,6 +378,7 @@ def ingest(
             authored_by=authored_by,
             ingested_by=ingested_by,
             session_date=session_date,
+            ingested_on=ingested_on,
             participants=participants,
         ),
     )
@@ -304,13 +406,19 @@ def ingest(
     if existing:
         data = origin.read_bytes()
         canonical = _canonical_text(data, suffix)
-        meta = _already_ingested(targets[2], sha256_bytes(data), sha256_text(canonical))
+        meta = _identical_sidecar(targets[2], sha256_bytes(data), sha256_text(canonical))
         if meta is not None:
-            return IngestResult(False, rel_source, meta.get("origin", rel_raw), rel_meta, meta.get("bundle_sha256", ""))
+            supplied = dict(
+                record_type=record_type,
+                classification=classification,
+                participants=participants,
+                authored_by=authored_by,
+            )
+            return _no_op_or_raise(repo_root, origin, meta, supplied, rel_meta)
         names = ", ".join(p.relative_to(repo_root).as_posix() for p in existing)
         raise UsageError(
             f"{origin} would be ingested as {rel_raw} and {rel_source}, but {names} already exists "
-            "with different content. Sources are immutable and never overwritten.",
+            "and is not an intact bundle of this exact file. Sources are immutable and never overwritten.",
             fix=f"merit ingest {_quote(origin)} --as <new-name> (same other options)",
         )
 
