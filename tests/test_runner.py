@@ -203,7 +203,9 @@ def test_raw_validation_precedes_model(known_good, monkeypatch):
         pytest.fail("the model must not see structurally invalid YAML")
     monkeypatch.setattr(runner, "load_repo", forbidden)
     findings = runner.run_checks(known_good)
-    assert findings and all(f.check_id == "V3" and f.path == path for f in findings)
+    assert findings[0].check_id == "V3"
+    assert {f.check_id for f in findings} == {"V3", "V4"}
+    assert all(f.path == path for f in findings)
 
 
 def test_model_validation_failure_becomes_v3(known_good, monkeypatch):
@@ -235,7 +237,8 @@ def test_non_document_or_wrong_types_are_v3(known_good, text):
     from merit.validate.runner import run_checks
     path = known_good / "requirements" / "REQ-SMP-0001.yaml"
     path.write_text(text, encoding="utf-8")
-    assert {f.check_id for f in run_checks(known_good)} == {"V3"}
+    expected = {"V3"} if text in ("[]", "null") else {"V3", "V4"}
+    assert {f.check_id for f in run_checks(known_good)} == expected
 
 
 def test_proposals_are_not_validated(known_good):

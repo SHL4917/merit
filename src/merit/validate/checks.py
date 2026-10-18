@@ -2,6 +2,7 @@
 
 import datetime
 import json
+import re
 from functools import lru_cache
 from importlib import resources
 from pathlib import PurePosixPath
@@ -17,8 +18,89 @@ from merit.errors import AnchorError
 from merit.ingest import SUPPORTED_SUFFIXES, _canonical_text
 from merit.ingest.bundle import bundle_sha256
 from merit.ingest.canonical import normalise_text, sha256_bytes, sha256_text
-from merit.model import ARTEFACT_DIRS
+from merit.model import ARTEFACT_DIRS, ID_PATTERNS
 from merit.validate.runner import Finding, register
+
+
+@register("V4")
+def id_discipline(context):
+    """Inspect raw identities, even when V3 prevents safe model construction."""
+    findings = []
+    point = git_ops.comparison_point(context.context_root)
+    for kind, dirname in ARTEFACT_DIRS.items():
+        current = {}
+        for path in sorted((context.artefact_root / dirname).glob("*.yaml")):
+            if not path.is_file():
+                continue
+            try:
+                raw = yaml.load(path.read_text(encoding="utf-8"), Loader=_LocatedSafeLoader)
+            except (OSError, UnicodeError, yaml.YAMLError):
+                continue  # V3 owns unreadable documents.
+            if not isinstance(raw, dict):
+                continue
+            identity = raw.get("id")
+            fix = f"restore a valid, unique {kind} id in {path}, then run: merit validate"
+            pattern = ID_PATTERNS.get(kind)
+            if not isinstance(identity, str) or (pattern and not re.fullmatch(pattern, identity)):
+                findings.append(Finding("V4", path, f"invalid {kind} id: {identity!r}", fix))
+            if not isinstance(identity, str):
+                continue
+            relative = path.relative_to(context.artefact_root).as_posix()
+            if identity in current:
+                findings.append(Finding("V4", path,
+                                        f"duplicate {kind} id {identity!r}; also in {current[identity][0]}", fix))
+            current.setdefault(identity, []).append(relative)
+        if point.kind == "none" or point.rev is None:
+            continue
+        for name in git_ops.files_at(context.context_root, point.rev, dirname):
+            historical_path = PurePosixPath(name)
+            if len(historical_path.parts) != 2 or historical_path.suffix != ".yaml":
+                continue
+            text = git_ops.file_at(context.context_root, point.rev, name)
+            try:
+                prior = yaml.load(text, Loader=_LocatedSafeLoader) if text else None
+            except yaml.YAMLError:
+                continue
+            identity = prior.get("id") if isinstance(prior, dict) else None
+            if isinstance(identity, str) and name not in current.get(identity, []):
+                path = context.artefact_root / name
+                findings.append(Finding("V4", path,
+                                        f"historical {kind} id {identity!r} must remain at {name} ({point.rev})",
+                                        f"restore {identity!r} at {path}; allocate a new id for a new artefact"))
+    return findings
+
+
+@register("V6")
+def provenance_and_status(context):
+    findings = []
+
+    def require(artefact, directory, field, message):
+        value = getattr(artefact, field)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            path = context.artefact_root / directory / (artefact.id + ".yaml")
+            findings.append(Finding("V6", path, message,
+                                    f"set {field} in {path}, then run: merit validate"))
+
+    for requirement in context.repo.requirements.values():
+        path = context.artefact_root / "requirements" / (requirement.id + ".yaml")
+        if not requirement.evidence:
+            findings.append(Finding("V6", path,
+                                    f"{requirement.provenance} requirement requires at least one evidence entry",
+                                    f"add source evidence to {path}, then run: merit anchor {path}"))
+        if requirement.provenance == "inferred":
+            require(requirement, "requirements", "rationale", "inferred requirement requires rationale")
+        for status, field in (("deferred", "deferred_reason"), ("withdrawn", "withdrawn_reason")):
+            if requirement.status == status:
+                require(requirement, "requirements", field, f"{status} requirement requires {field}")
+    for candidate in context.repo.candidates.values():
+        if candidate.status == "withdrawn":
+            require(candidate, "candidates", "withdrawn_reason", "withdrawn candidate requires withdrawn_reason")
+        if candidate.status == "promoted":
+            if candidate.promoted_to not in context.repo.requirements:
+                path = context.artefact_root / "candidates" / (candidate.id + ".yaml")
+                findings.append(Finding("V6", path, "promoted candidate requires promoted_to naming an existing requirement",
+                                        f"set promoted_to to an existing requirement in {path}, then run: merit validate"))
+    return findings
 
 
 @register("V5")
