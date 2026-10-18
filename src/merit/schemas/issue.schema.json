@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "issue",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "type": "integer"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^ISS-[0-9]{4}(?![\\s\\S])"
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "contradiction",
+        "revision",
+        "scenario_difference",
+        "misunderstanding"
+      ]
+    },
+    "summary": {
+      "type": "string"
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "string"
+          },
+          "bundle_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "end_line": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "speaker": {
+            "type": "string"
+          },
+          "quote": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "source",
+          "bundle_sha256",
+          "line",
+          "speaker",
+          "quote"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "affects": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^REQ-[A-Z]{2,6}-[0-9]{4}(?![\\s\\S])"
+      }
+    },
+    "question": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "open",
+        "resolved",
+        "dismissed"
+      ]
+    },
+    "owner": {
+      "type": "string"
+    },
+    "resolved_by": {
+      "type": "string",
+      "pattern": "^DEC-[0-9]{4}(?![\\s\\S])"
+    },
+    "dismissed_reason": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "id",
+    "kind",
+    "summary",
+    "evidence",
+    "affects",
+    "question",
+    "status",
+    "owner"
+  ],
+  "additionalProperties": false
+}

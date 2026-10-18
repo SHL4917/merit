@@ -178,7 +178,8 @@ class Decision:
     decided_on: Date
     decided_by: str
     outcome: str
-    record: Evidence = _one_field(Evidence)
+    # Absence belongs to V9; an explicitly null/non-object record is structural.
+    record: Evidence | None = field(default=None, metadata={"of": Evidence, "non_null": True})
     confirmed_by: str | None = None
     confirmation_record: Evidence | None = _one_field(Evidence, required=False)
 
@@ -297,7 +298,7 @@ def _build(cls: type, data: Any, path: Path | str, loc: str) -> Any:
                 value = [_build(of, item, path, f"{here}[{i}]") for i, item in enumerate(value)]
         elif of is not None:
             if value is None:
-                if fields[name].default is dataclasses.MISSING:
+                if fields[name].default is dataclasses.MISSING or meta.get("non_null"):
                     raise _fail(path, f"{here}: required, but is empty")
             else:
                 value = _build(of, value, path, here)
@@ -475,6 +476,8 @@ def confirmation_defect(decision: Decision, repo: Repo) -> str | None:
     name = _named(decision.confirmed_by)
     if name is None:
         return None
+    if decision.record is None:
+        return "the decision has no record to confirm"
     record = decision.confirmation_record
     if record is None:
         return "confirmed_by is set but there is no confirmation_record"
@@ -487,8 +490,9 @@ def confirmation_defect(decision: Decision, repo: Repo) -> str | None:
     confirmer_authored = _authored_by(source, repo)
     if _named(record.speaker) != name and confirmer_authored != name:
         return "neither the confirmation_record speaker nor its source author is confirmed_by"
-    if _record_type(decision.record.source, repo) == SELF_RECORDED_NOTE:
-        note_author = _authored_by(decision.record.source, repo)
+    record_source = decision.record.source if decision.record is not None else None
+    if _record_type(record_source, repo) == SELF_RECORDED_NOTE:
+        note_author = _authored_by(record_source, repo)
         if note_author is not None and name == note_author:
             return "confirmed_by is the note's own author (a second person must confirm)"
         if note_author is not None and confirmer_authored == note_author:
@@ -508,7 +512,7 @@ def is_provisional(decision: Decision, repo: Repo) -> bool:
     readable ``record_type`` cannot be shown to be anything but unverified, so
     it counts as provisional. Reads sidecar metadata only, never source text.
     """
-    record_type = _record_type(decision.record.source, repo)
+    record_type = _record_type(decision.record.source if decision.record is not None else None, repo)
     unverified_basis = record_type is None or record_type == SELF_RECORDED_NOTE
     return unverified_basis and not is_confirmed(decision, repo)
 

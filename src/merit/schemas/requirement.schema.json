@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "requirement",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "type": "integer"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^REQ-[A-Z]{2,6}-[0-9]{4}(?![\\s\\S])"
+    },
+    "statement": {
+      "type": "string"
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "functional",
+        "constraint",
+        "quality",
+        "interface"
+      ]
+    },
+    "provenance": {
+      "type": "string",
+      "enum": [
+        "stated",
+        "inferred"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "draft",
+        "clarifying",
+        "baselined",
+        "deferred",
+        "withdrawn"
+      ]
+    },
+    "rationale": {
+      "type": "string"
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "string"
+          },
+          "bundle_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "end_line": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "speaker": {
+            "type": "string"
+          },
+          "quote": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "source",
+          "bundle_sha256",
+          "line",
+          "speaker",
+          "quote"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "acceptance_criteria": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "owner": {
+      "type": "string"
+    },
+    "promoted_from": {
+      "type": "string",
+      "pattern": "^CAN-[0-9]{4}(?![\\s\\S])"
+    },
+    "deferred_reason": {
+      "type": "string"
+    },
+    "withdrawn_reason": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "id",
+    "statement",
+    "type",
+    "provenance",
+    "status",
+    "evidence"
+  ],
+  "additionalProperties": false
+}

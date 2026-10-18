@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "decision",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "type": "integer"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^DEC-[0-9]{4}(?![\\s\\S])"
+    },
+    "resolves": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^ISS-[0-9]{4}(?![\\s\\S])"
+      }
+    },
+    "decided_on": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}(?![\\s\\S])"
+    },
+    "decided_by": {
+      "type": "string"
+    },
+    "outcome": {
+      "type": "string"
+    },
+    "record": {
+      "type": "object",
+      "properties": {
+        "source": {
+          "type": "string"
+        },
+        "bundle_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "end_line": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "speaker": {
+          "type": "string"
+        },
+        "quote": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "bundle_sha256",
+        "line",
+        "speaker",
+        "quote"
+      ],
+      "additionalProperties": false
+    },
+    "confirmed_by": {
+      "type": "string"
+    },
+    "confirmation_record": {
+      "type": "object",
+      "properties": {
+        "source": {
+          "type": "string"
+        },
+        "bundle_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "end_line": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "speaker": {
+          "type": "string"
+        },
+        "quote": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "bundle_sha256",
+        "line",
+        "speaker",
+        "quote"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "schema_version",
+    "id",
+    "resolves",
+    "decided_on",
+    "decided_by",
+    "outcome"
+  ],
+  "additionalProperties": false
+}

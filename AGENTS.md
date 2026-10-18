@@ -17,6 +17,10 @@ This is the tool repository. It holds no requirements data. Design: `docs/superp
 
 - JSON Schemas cover structure, types, enums and patterns only, never cross-field rules. Every cross-field rule is a numbered check. Otherwise a fixture built to hit V6 fails V3 first.
 - Every check registers under its own ID, so tests assert the right rule fired.
+- V3 validates raw YAML before model loading; model validation failures become located V3 findings. Its structural gate precedes semantic checks. The runner reads artefacts from `artefact_root`, configuration/history from `context_root` (defaulting to the former).
+- ID schemas reuse `model.ID_PATTERNS` exactly, including the portable strict `(?![\s\S])` terminator. Neither `$` nor Python-only `\Z` is equivalent across consumers.
+- Decision record absence belongs to V9, so the schema/model permit it; display paths treat missing source metadata as provisional. Evidence cardinality and conditional reasons likewise belong to numbered checks, not V3.
+- V1 owns missing source integrity metadata. The sidecar schema rejects unknown fields and validates present fields, but permits absent fields so V1 reports the integrity failure under its own ID.
 - `open_issues` and `awaiting_confirmation` are derived on read and never stored. Stored, an agent could clear a block by editing the thing being blocked.
 - The tool never merges and never tags. Those stay human actions.
 - `merit apply` is the only write path for governed artefacts. `merit ingest` is the single narrow, create-only exception and owns `sources/`.

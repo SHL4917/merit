@@ -116,6 +116,23 @@ def _doctor_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("path", nargs="?", default=".", help="inside the repo (default: .)")
 
 
+def _validate(args: argparse.Namespace) -> int:
+    """Validate governed artefacts with deterministic numbered checks."""
+    from merit.validate import runner
+    findings = runner.run_checks(find_repo_root(Path(args.path)), strict=args.strict)
+    for finding in findings:
+        print(f"{finding.check_id} {finding.severity}: {finding.path}: {finding.message}")
+        print(f"fix: {finding.fix}")
+    if not findings:
+        print("ok: repository validates")
+    return int(any(f.severity == "error" for f in findings))
+
+
+def _validate_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("path", nargs="?", default=".", help="inside the repo (default: .)")
+    parser.add_argument("--strict", action="store_true", help="enable strict validation checks")
+
+
 def _ingest_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("origin", help="the .vtt, .docx or .txt file to ingest")
     parser.add_argument(
@@ -159,6 +176,7 @@ COMMANDS: dict[str, Command] = {
     "init": Command(_init, _init_arguments),
     "doctor": Command(_doctor, _doctor_arguments),
     "ingest": Command(_ingest, _ingest_arguments),
+    "validate": Command(_validate, _validate_arguments),
 }
 
 

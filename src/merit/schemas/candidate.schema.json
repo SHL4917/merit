@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "candidate",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "type": "integer"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^CAN-[0-9]{4}(?![\\s\\S])"
+    },
+    "statement": {
+      "type": "string"
+    },
+    "rationale": {
+      "type": "string"
+    },
+    "raised_by": {
+      "type": "string"
+    },
+    "raised_on": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}(?![\\s\\S])"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "open",
+        "promoted",
+        "withdrawn"
+      ]
+    },
+    "promoted_to": {
+      "type": "string",
+      "pattern": "^REQ-[A-Z]{2,6}-[0-9]{4}(?![\\s\\S])"
+    },
+    "withdrawn_reason": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "id",
+    "statement",
+    "rationale",
+    "raised_by",
+    "raised_on",
+    "status"
+  ],
+  "additionalProperties": false
+}

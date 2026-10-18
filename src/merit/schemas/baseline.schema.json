@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "baseline",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "prepared_on": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}(?![\\s\\S])"
+    },
+    "prepared_by": {
+      "type": "string"
+    },
+    "governed_tree_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
+    },
+    "merit_version": {
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "type": "integer"
+    },
+    "requirements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^REQ-[A-Z]{2,6}-[0-9]{4}(?![\\s\\S])"
+          },
+          "content_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
+          }
+        },
+        "required": [
+          "id",
+          "content_sha256"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "deferred": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^REQ-[A-Z]{2,6}-[0-9]{4}(?![\\s\\S])"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "reason"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "open_issues": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^ISS-[0-9]{4}(?![\\s\\S])"
+      }
+    }
+  },
+  "required": [
+    "id",
+    "prepared_on",
+    "prepared_by",
+    "governed_tree_hash",
+    "merit_version",
+    "schema_version",
+    "requirements",
+    "deferred",
+    "open_issues"
+  ],
+  "additionalProperties": false
+}
