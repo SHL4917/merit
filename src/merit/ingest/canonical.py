@@ -9,6 +9,13 @@ Grammar is ``[NNNN] SPEAKER: TEXT``, split on the first ``": "`` after the
 bracket. Speaker ``#`` marks a structural or unattributed line. Speaker
 attribution is structural, never inferred.
 
+Every line, including the last, ends with a single newline. A file without a
+final newline, or with a trailing blank line, is rejected: it was not produced
+by ``render_canonical``. Text keeps its leading whitespace exactly. Lines with
+empty text (``[0004] Sam Ellis: `` and ``[0004] # ``) end in a trailing space,
+so an editor or ``git diff --check`` whitespace cleanup turns a valid file into
+a parse error. That is loud, and the changed hash would flag the edit anyway.
+
 Two different normalisations live here and must not be conflated:
 
 * ``normalise_text`` makes line endings and a BOM irrelevant to the canonical
@@ -26,8 +33,9 @@ from merit.errors import ValidationFailed
 
 STRUCTURAL_SPEAKER = "#"
 _MAX_NUMBER = 9999
-_LINE = re.compile(r"\[(\d{4})\] (.*)")
-_BOM = "﻿"
+# [0-9], not \d: \d also matches non-ASCII digits, which would not round-trip.
+_LINE = re.compile(r"\[([0-9]{4})\] (.*)")
+_BOM = "\ufeff"
 
 
 @dataclass(frozen=True)
@@ -78,9 +86,11 @@ def parse_canonical(text: str) -> list[CanonicalLine]:
     body = normalise_text(text)
     if body == "":
         return lines
-    rows = body.split("\n")
-    if rows[-1] == "":
-        rows.pop()
+    if not body.endswith("\n"):
+        # render_canonical always ends with a newline, so a file without one was
+        # not produced by it; accepting it would break round-trip identity.
+        raise _malformed(body.count("\n") + 1, body.rsplit("\n", 1)[-1], "missing final newline")
+    rows = body.split("\n")[:-1]
     for lineno, raw in enumerate(rows, start=1):
         match = _LINE.fullmatch(raw)
         if match is None:
@@ -94,6 +104,9 @@ def parse_canonical(text: str) -> list[CanonicalLine]:
         speaker, sep, utterance = rest.partition(": ")
         if not sep or not speaker:
             raise _malformed(lineno, raw, "no speaker before the first ': '")
+        if speaker == STRUCTURAL_SPEAKER:
+            # '[NNNN] #: text' looks attributed but would silently become structural.
+            raise _malformed(lineno, raw, "'#' is the structural marker, not a speaker; write '# text'")
         lines.append(CanonicalLine(number, speaker, utterance))
     return lines
 

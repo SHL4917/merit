@@ -80,7 +80,7 @@ def test_colon_without_space_does_not_split():
 
 
 def test_parse_accepts_crlf_and_bom():
-    crlf = "﻿" + SAMPLE.replace("\n", "\r\n")
+    crlf = "\ufeff" + SAMPLE.replace("\n", "\r\n")
     assert parse_canonical(crlf) == parse_canonical(SAMPLE)
 
 
@@ -98,6 +98,15 @@ def test_parse_empty_is_empty_and_render_empty_is_empty():
         "[0001] Sam Ellis no separator\n",
         "[0001] : empty speaker\n",
         "[0001] #nospace\n",
+        # Looks attributed but would silently become structural and not round-trip.
+        "[0001] #: text\n",
+        # Non-ASCII digits are not line numbers (ARABIC-INDIC DIGIT ZERO/TWO).
+        "[\N{ARABIC-INDIC DIGIT ZERO}\N{ARABIC-INDIC DIGIT ZERO}"
+        "\N{ARABIC-INDIC DIGIT ZERO}\N{ARABIC-INDIC DIGIT TWO}] Sam: x\n",
+        # render_canonical always ends with a newline; a file without one is not canonical.
+        "[0001] Sam Ellis: no trailing newline",
+        "[0001] Sam Ellis: trailing blank line\n\n",
+        "\n",
         "[0001] Sam Ellis: ok\n\n[0003] Sam Ellis: blank line between\n",
     ],
 )
@@ -130,12 +139,12 @@ def test_normalise_text_folds_crlf_and_bare_cr():
 
 
 def test_normalise_text_strips_leading_bom_only():
-    assert normalise_text("﻿abc") == "abc"
-    assert normalise_text("a﻿bc") == "a﻿bc"
+    assert normalise_text("\ufeffabc") == "abc"
+    assert normalise_text("a\ufeffbc") == "a\ufeffbc"
 
 
 def test_normalise_text_does_nothing_else():
-    s = "  Tabs\tand  spaces  “quoted”  \n"
+    s = "  Tabs\tand  spaces  \u201cquoted\u201d  \n"
     assert normalise_text(s) == s
 
 
@@ -145,7 +154,7 @@ def test_crlf_and_lf_copies_hash_identically():
 
 
 def test_bom_is_stripped_before_hashing():
-    assert sha256_text("﻿" + SAMPLE) == sha256_text(SAMPLE)
+    assert sha256_text("\ufeff" + SAMPLE) == sha256_text(SAMPLE)
 
 
 def test_sha256_text_is_over_normalised_utf8():
@@ -184,7 +193,37 @@ def test_normalise_whitespace_preserves_case_and_punctuation():
 
 
 def test_normalise_whitespace_does_not_fold_quotes_or_unicode():
-    s = "it’s “fine” café"
+    s = "it\N{RIGHT SINGLE QUOTATION MARK}s \N{LEFT DOUBLE QUOTATION MARK}fine\N{RIGHT DOUBLE QUOTATION MARK}"
     assert normalise_whitespace(s) == s
-    # Decomposed and precomposed forms stay distinct: no Unicode normalisation.
-    assert normalise_whitespace("é") != normalise_whitespace("é")
+    # DELIBERATE ESCAPES, do not replace with literal characters. A formatter or
+    # editor applying NFC would turn the decomposed form into the precomposed one
+    # and make this test pass vacuously, silently disarming the paraphrase barrier.
+    decomposed = "e\N{COMBINING ACUTE ACCENT}"
+    precomposed = "\N{LATIN SMALL LETTER E WITH ACUTE}"
+    assert decomposed != precomposed
+    assert len(decomposed) == 2 and len(precomposed) == 1
+    assert normalise_whitespace(decomposed) != normalise_whitespace(precomposed)
+
+
+# --- round-trip edges ------------------------------------------------------
+
+
+def test_leading_whitespace_in_text_is_preserved():
+    src = "[0002] Sam Ellis:    indented\n[0003] # \tlead\n"
+    lines = parse_canonical(src)
+    assert lines[0].text == "   indented"
+    assert lines[1].text == "\tlead"
+    assert render_canonical(lines) == src
+
+
+def test_empty_text_lines_keep_their_trailing_space():
+    src = "[0004] Sam Ellis: \n[0005] # \n"
+    assert render_canonical(parse_canonical(src)) == src
+    # The whitespace-stripped form is a loud parse error, not a silent change.
+    with pytest.raises(ValidationFailed):
+        parse_canonical("[0004] Sam Ellis:\n")
+
+
+def test_ascii_digits_only_in_line_numbers_round_trip():
+    src = "[0002] Sam: x\n"
+    assert render_canonical(parse_canonical(src)) == src

@@ -149,7 +149,7 @@ def test_unserialisable_values_raise_instead_of_being_str_coerced():
 
 def test_non_ascii_names_hash_via_ascii_escaped_json():
     meta = make_meta()
-    meta["participants"][0]["name"] = "Zoë Muñoz"
+    meta["participants"][0]["name"] = "Zo\u00eb Mu\u00f1oz"
     immutable = {k: meta[k] for k in IMMUTABLE_META_FIELDS}
     assert "\\u00eb" in json.dumps(immutable, sort_keys=True, separators=(",", ":"))
     assert bundle_sha256(meta) == formula_by_hand(meta)
@@ -159,4 +159,31 @@ def test_missing_immutable_field_raises():
     meta = make_meta()
     del meta["authored_by"]
     with pytest.raises(ValueError, match="authored_by"):
+        bundle_sha256(meta)
+
+
+def test_participant_order_is_significant():
+    # sort_keys sorts mapping keys only; list order must stay meaningful.
+    a = make_meta()
+    b = make_meta()
+    b["participants"] = list(reversed(a["participants"]))
+    assert b["participants"] != a["participants"]
+    assert bundle_sha256(a) != bundle_sha256(b)
+
+
+def test_non_str_mapping_keys_raise_instead_of_colliding():
+    str_keyed = make_meta()
+    str_keyed["participants"][0] = {"1": "x"}
+    int_keyed = make_meta()
+    int_keyed["participants"][0] = {1: "x"}
+    bundle_sha256(str_keyed)
+    with pytest.raises(TypeError, match="keys must be str"):
+        bundle_sha256(int_keyed)
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_non_finite_floats_raise_instead_of_emitting_nonstandard_json(bad):
+    meta = make_meta()
+    meta["participants"][0]["score"] = bad
+    with pytest.raises(ValueError):
         bundle_sha256(meta)

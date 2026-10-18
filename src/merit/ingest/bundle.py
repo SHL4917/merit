@@ -18,6 +18,10 @@ Normative definition (Tasks 9 and 14 must recompute this byte-identically):
   yields for ``2026-09-12``) are converted to ISO-8601 strings first. Any other
   value JSON cannot represent raises ``TypeError``; it is never coerced with
   ``str()``, which would make the hash depend on Python's repr.
+* Mapping keys must be ``str`` and NaN/infinity are refused (``allow_nan=False``),
+  so the output is standard JSON that a shell script can reproduce byte for byte.
+* List order is significant (``participants`` is never sorted); only mapping
+  keys are sorted.
 * ``bundle_sha256`` is excluded from its own input.
 
 This protects the attribution fields: flipping ``record_type`` from
@@ -53,6 +57,11 @@ def _jsonable(value: Any) -> Any:
     if isinstance(value, (datetime.date, datetime.datetime)):
         return value.isoformat()
     if isinstance(value, Mapping):
+        # json.dumps would coerce int/None/bool keys to strings, so {1: "x"} and
+        # {"1": "x"} would collide. Refuse instead.
+        for k in value:
+            if not isinstance(k, str):
+                raise TypeError(f"cannot hash sidecar mapping key {k!r}: keys must be str")
         return {k: _jsonable(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
         return [_jsonable(v) for v in value]
@@ -68,6 +77,8 @@ def bundle_sha256(meta: Mapping[str, Any]) -> str:
     if missing:
         raise ValueError(f"sidecar is missing immutable field(s): {', '.join(missing)}")
     immutable = {k: _jsonable(meta[k]) for k in IMMUTABLE_META_FIELDS}
-    canonical_json = json.dumps(immutable, sort_keys=True, separators=(",", ":"))
+    canonical_json = json.dumps(
+        immutable, sort_keys=True, separators=(",", ":"), allow_nan=False
+    )
     payload = meta["sha256"] + meta["origin_sha256"] + canonical_json
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
