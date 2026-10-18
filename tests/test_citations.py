@@ -99,3 +99,14 @@ def test_empty_denominator(project):
     assert result.substantive_count == result.cited_count == 0
     assert result.percentage == 0
     assert str(result).endswith("0.0% of substantive lines cited (0/0).")
+
+
+def test_cli_citations_prints_worklist_before_percentage(project, capsys):
+    from merit import cli
+    root, sources, _ = project
+    single = anchor_evidence(Evidence(source=sources["zeta"], quote="a" * 40), root)
+    requirement(root, 1, [single])
+    assert cli.main(["citations", str(root)]) == 0
+    output = capsys.readouterr().out
+    assert sources["alpha"] in output
+    assert output.index(sources["alpha"]) < output.index("%")

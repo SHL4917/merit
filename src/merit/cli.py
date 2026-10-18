@@ -206,6 +206,18 @@ def _questions_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--open", action="store_true", help="include open and awaiting_confirmation issues (default)")
 
 
+def _citations(args: argparse.Namespace) -> None:
+    """List substantive source lines no requirement cites, then the coverage percentage."""
+    from merit.citations import citation_coverage
+    from merit.config import load_config
+    root = find_repo_root(Path(args.path))
+    print(citation_coverage(root, load_config(root)))
+
+
+def _citations_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("path", nargs="?", default=".", help="inside the repo (default: .)")
+
+
 def _baseline(args: argparse.Namespace) -> int:
     """Check baseline readiness or prepare its manifest and human tag handoff."""
     from merit.baseline import baseline
@@ -438,6 +450,7 @@ COMMANDS: dict[str, Command] = {
     "validate": Command(_validate, _validate_arguments),
     "report": Command(_report, _report_arguments),
     "questions": Command(_questions, _questions_arguments),
+    "citations": Command(_citations, _citations_arguments),
     "baseline": Command(_baseline, _baseline_arguments),
     "start-draft": Command(_start_draft, _start_draft_arguments),
     "save": Command(_save, _save_arguments),

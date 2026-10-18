@@ -10,7 +10,7 @@ import sys
 import pytest
 import yaml
 
-from merit import cli, doctor, git_ops as ops
+from merit import __version__, cli, doctor, git_ops as ops
 from merit.errors import EnvironmentError_, UsageError
 from merit.scaffold import _template, init
 from test_git_ops import git, repo
@@ -18,7 +18,7 @@ from test_git_ops import git, repo
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_REPO = "acme/merit"
 SHA = "a" * 40
-WHEEL = "https://github.com/acme/merit/releases/download/v0.1.0/merit-0.1.0-py3-none-any.whl"
+WHEEL = f"https://github.com/acme/merit/releases/download/v{__version__}/merit-{__version__}-py3-none-any.whl"
 DIGEST = "b" * 64
 
 
@@ -32,7 +32,7 @@ def github(monkeypatch):
     """A complete readable GitHub account with T2 controls; opt into T1 explicitly."""
     project = _template("workflow.yml").replace("__WORKFLOW_REPO__", WORKFLOW_REPO).replace("__SHA__", SHA)
     responses = {
-        f"repos/{WORKFLOW_REPO}/commits/v0.1.0": {"sha": SHA},
+        f"repos/{WORKFLOW_REPO}/commits/v{__version__}": {"sha": SHA},
         f"repos/{WORKFLOW_REPO}/contents/{ops.WORKFLOW_PATH}?ref={SHA}": file_response(
             ops.WORKFLOW_PATH, _template("validator-workflow.yml").replace("__TRUSTED_DIGEST__", DIGEST)),
         "view": {"nameWithOwner": "acme/project", "defaultBranchRef": {"name": "main"}},
@@ -218,7 +218,7 @@ def test_some_ruleset_targeting_main_does_not_imply_t1(github, tmp_path):
     assert tier(github, tmp_path) == "T2"
 
 
-@pytest.mark.parametrize("endpoint", ["repos/acme/project/rules/branches/main", f"repos/{WORKFLOW_REPO}/commits/v0.1.0"])
+@pytest.mark.parametrize("endpoint", ["repos/acme/project/rules/branches/main", f"repos/{WORKFLOW_REPO}/commits/v{__version__}"])
 def test_unreadable_settings_are_unverified(github, tmp_path, endpoint):
     t1(github)
     github[0][endpoint] = EnvironmentError_("HTTP 403 denied", fix="gh auth status")
@@ -296,7 +296,7 @@ def test_annotated_release_tag_is_peeled_but_refused_without_trusted_digest(repo
 
     def local_api(root, endpoint, **kwargs):
         requested.append(endpoint)
-        if endpoint == f"repos/{WORKFLOW_REPO}/commits/v0.1.0":
+        if endpoint == f"repos/{WORKFLOW_REPO}/commits/v{__version__}":
             return {"sha": commit}  # GitHub's commits/{ref} peels an annotated tag to its commit
         sha = endpoint.rsplit("=", 1)[1]
         return file_response(ops.WORKFLOW_PATH, git(repo, "show", f"{sha}:{ops.WORKFLOW_PATH}"))
@@ -308,7 +308,7 @@ def test_annotated_release_tag_is_peeled_but_refused_without_trusted_digest(repo
 
 @pytest.mark.parametrize("sha", ["v0.1.0", "a" * 39, "g" * 40, "a" * 40 + "\n"])
 def test_resolve_ref_rejects_non_commit_identity(github, tmp_path, sha):
-    github[0][f"repos/{WORKFLOW_REPO}/commits/v0.1.0"] = {"sha": sha}
+    github[0][f"repos/{WORKFLOW_REPO}/commits/v{__version__}"] = {"sha": sha}
     with pytest.raises(EnvironmentError_):
         ops.resolve_workflow_sha(tmp_path, WORKFLOW_REPO)
 

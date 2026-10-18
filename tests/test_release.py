@@ -77,7 +77,7 @@ def bash_executable():
     return shutil.which("bash")
 
 
-def run_install(tmp_path, digest, url="https://example.invalid/merit-0.1.0-py3-none-any.whl", *, content=b"offline wheel fixture\n", caller_digest=None):
+def run_install(tmp_path, digest, url=f"https://example.invalid/merit-{__version__}-py3-none-any.whl", *, content=b"offline wheel fixture\n", caller_digest=None):
     bash = bash_executable()
     if bash is None:
         pytest.skip("Bash is needed to exercise the Ubuntu workflow script")
