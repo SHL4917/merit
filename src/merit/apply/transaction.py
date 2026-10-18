@@ -25,7 +25,7 @@ def _files(root):
     return {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
 
 
-def _promote(root, stage, backup, proposal):
+def _promote(root, stage, backup, proposal=None):
     """Retain original directories until every rename, including scratch, succeeds.
 
     A filesystem cannot rename several directories in one syscall. The journal
@@ -34,7 +34,9 @@ def _promote(root, stage, backup, proposal):
     so rollback retains their bytes and timestamps.
     """
     journal = []
-    parents = {root: root.stat(), proposal.parent: proposal.parent.stat()}
+    parents = {root: root.stat()}
+    if proposal is not None:
+        parents[proposal.parent] = proposal.parent.stat()
     try:
         for dirname in ARTEFACT_DIRS.values():
             target, staged, old = root / dirname, stage / dirname, backup / dirname
@@ -45,7 +47,8 @@ def _promote(root, stage, backup, proposal):
                 target.replace(old)
             journal.append((target, old, existed))
             staged.replace(target)
-        proposal.replace(backup / "applied-proposal.yaml")
+        if proposal is not None:
+            proposal.replace(backup / "applied-proposal.yaml")
     except OSError:
         for target, old, existed in reversed(journal):
             if target.exists():
@@ -55,6 +58,46 @@ def _promote(root, stage, backup, proposal):
         for path, stat in parents.items():
             os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
         raise
+
+
+def _stage(root, stage):
+    shutil.copy2(root / "merit.toml", stage / "merit.toml")
+    for dirname in GOVERNED_DIRS:
+        source = root / dirname
+        if source.exists():
+            if source.is_symlink() or any(p.is_symlink() for p in source.rglob("*")):
+                raise UsageError("governed trees must not contain symlinks", fix="merit validate")
+            shutil.copytree(source, stage / dirname)
+        elif dirname != "sources":
+            # Preserve missing-source V1 parity with the real repository.
+            (stage / dirname).mkdir()
+
+
+def apply_baseline(repo_root, prepare):
+    """Promote only a computed baseline using apply's validation/rollback boundary.
+
+    This internal command-specific entry point is not a proposal operation.
+    The callback writes its computed manifest only into the staged tree.
+    """
+    root = Path(repo_root).resolve()
+    try:
+        with tempfile.TemporaryDirectory(prefix="merit-baseline-", dir=root.parent,
+                                         ignore_cleanup_errors=True) as scratch:
+            scratch = Path(scratch)
+            stage, backup = scratch / "stage", scratch / "backup"
+            stage.mkdir()
+            backup.mkdir()
+            _stage(root, stage)
+            manifest = prepare(stage)
+            findings = run_checks(stage, context_root=root)
+            errors = [f for f in findings if f.severity == "error"]
+            if errors:
+                raise ValidationFailed("; ".join(f"{f.check_id}: {f.message}" for f in errors),
+                                       fix="merit validate")
+            _promote(root, stage, backup)
+            return manifest
+    except OSError as exc:
+        raise EnvironmentError_(f"cannot prepare baseline: {exc}", fix="merit baseline") from exc
 
 
 def apply_proposal(repo_root, proposal_path):
@@ -73,17 +116,7 @@ def apply_proposal(repo_root, proposal_path):
             stage, backup = scratch / "stage", scratch / "backup"
             stage.mkdir()
             backup.mkdir()
-            shutil.copy2(root / "merit.toml", stage / "merit.toml")
-            for dirname in GOVERNED_DIRS:
-                source = root / dirname
-                if source.exists():
-                    if source.is_symlink() or any(p.is_symlink() for p in source.rglob("*")):
-                        raise UsageError("governed trees must not contain symlinks", fix="merit validate")
-                    shutil.copytree(source, stage / dirname)
-                elif dirname != "sources":
-                    # V1 must see a missing sources directory, just as it does
-                    # in the real tree. Apply cannot repair source intake.
-                    (stage / dirname).mkdir()
+            _stage(root, stage)
             written = {}
             for index, operation in enumerate(data["operations"]):
                 for path in HANDLERS[operation["op"]](stage, operation):

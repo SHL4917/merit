@@ -23,7 +23,7 @@ This is the tool repository. It holds no requirements data. Design: `docs/superp
 - V1 owns missing source integrity metadata. The sidecar schema rejects unknown fields and validates present fields, but permits absent fields so V1 reports the integrity failure under its own ID.
 - `open_issues` and `awaiting_confirmation` are derived on read and never stored. Stored, an agent could clear a block by editing the thing being blocked.
 - The tool never merges and never tags. Those stay human actions.
-- `merit apply` is the only write path for governed artefacts. `merit ingest` is the single narrow, create-only exception and owns `sources/`.
+- `merit apply` owns governed changes; `merit baseline` computes only its manifest through the same staging/validation/rollback machinery, without a public proposal operation. `merit ingest` is the create-only exception owning `sources/`.
 - A provisional decision is a valid state: V9 permits a self-recorded note with no `confirmed_by`, and V8 blocks it from a baseline.
 - A confirmation requires anchored evidence, not a name.
 - V1 integrity, V2 immutability, V3 structure, V4 IDs, V5 anchors, V6 provenance/status, V7 issues, V8 derived issue blocks, V9 decisions, V10 readiness, V11 supersession, V12 re-extraction each keep their own check ID.
@@ -32,6 +32,7 @@ This is the tool repository. It holds no requirements data. Design: `docs/superp
 - V11 reads `supersessions/`, never mutable source metadata. Non-baselined citations are advisory; baselined citations are errors. `baseline_blockers` returns all errors, never advisories.
 - Raw validation order is V3, V1, V4 before the model gate; all remaining checks require safe models. Context/history reads use the real repository even when artefacts are staged.
 - Apply handlers write only to staging. ID allocation reads staging; rollback consumes no IDs. The transaction calls `run_checks(staging, context_root=real_repo)` so V2/V4 retain their historical boundary and configuration. Never replace that call with validation of a bare temporary repo.
+- Baselines select only requirements already marked `baselined`; draft/clarifying items block preparation, deferred items retain reasons, withdrawn items are excluded. Hash UTF-8 governed text with normalized line endings, but retained `sources/raw/` originals as exact bytes. Doctor enumerates tagged files with `files_at`, including extra files, and reads binary blobs through `file_bytes_at`.
 - `add_decision` records issue status `resolved` and `resolved_by`; derived status still reads `awaiting_confirmation` for a provisional decision. Supersession writes a new artefact and never changes a sidecar.
 - All file I/O is explicitly UTF-8 (`encoding="utf-8"`). Never create a symlink: the target is Windows. Use `pathlib`.
 

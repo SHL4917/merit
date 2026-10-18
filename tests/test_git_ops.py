@@ -3,7 +3,17 @@ import subprocess
 
 import pytest
 
-from merit.git_ops import ComparisonPoint, comparison_point, file_at, files_at, list_tags
+from merit.git_ops import ComparisonPoint, comparison_point, file_at, file_bytes_at, files_at, list_tags
+
+
+def test_file_bytes_at_preserves_binary_content(repo):
+    content = bytes([255, 0, 13, 10, 128])
+    (repo / "binary.docx").write_bytes(content)
+    git(repo, "add", "binary.docx")
+    git(repo, "commit", "-m", "binary")
+    assert file_bytes_at(repo, "HEAD", "binary.docx") == content
+    assert file_bytes_at(repo, "HEAD", "absent") is None
+    assert file_bytes_at(repo, "absent", "binary.docx") is None
 
 
 def test_files_at_preserves_exact_paths_and_uses_history(repo):

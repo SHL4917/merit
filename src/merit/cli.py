@@ -173,6 +173,48 @@ def _report_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--output", help="HTML output path (default: public/index.html in the repo)")
 
 
+def _questions(args: argparse.Namespace) -> None:
+    """List open and awaiting_confirmation issues with quotes and drafted questions."""
+    from merit.questions import open_questions
+    questions = open_questions(find_repo_root(Path(args.path)))
+    if not questions:
+        print("No open questions.")
+    for item in questions:
+        print(f"{item['id']}: {item['status']} - {item['summary']}")
+        for evidence in item["evidence"]:
+            print(f"  {evidence['speaker']} ({evidence['source']}:{evidence['line']}): {evidence['quote']}")
+        print(f"  Question: {item['question']}")
+
+
+def _questions_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("path", nargs="?", default=".", help="inside the repo (default: .)")
+    parser.add_argument("--open", action="store_true", help="include open and awaiting_confirmation issues (default)")
+
+
+def _baseline(args: argparse.Namespace) -> int:
+    """Check baseline readiness or prepare its manifest and human tag handoff."""
+    from merit.baseline import baseline
+    result = baseline(find_repo_root(Path(args.path)), dry_run=args.dry_run, prepared_by=args.prepared_by)
+    print(f"ready: {len(result.ready)}; blocked: {len(result.blocked)}; deferred: {len(result.deferred)}")
+    for reason in result.reasons:
+        print(reason)
+    for finding in result.findings:
+        print(f"{finding.check_id} {finding.severity}: {finding.message}")
+        print(f"fix: {finding.fix}")
+    if result.manifest:
+        print(f"Prepared baselines/{result.manifest.id}.yaml")
+        print(result.handoff)
+    elif not result.can_prepare:
+        print("Baseline not ready. fix: merit validate")
+    return int(not result.can_prepare)
+
+
+def _baseline_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("path", nargs="?", default=".", help="inside the repo (default: .)")
+    parser.add_argument("--dry-run", action="store_true", help="report readiness and write nothing")
+    parser.add_argument("--prepared-by", help="preparer's name (default: current user)")
+
+
 def _ingest_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("origin", help="the .vtt, .docx or .txt file to ingest")
     parser.add_argument(
@@ -243,9 +285,10 @@ def _help_agent(args: argparse.Namespace) -> None:
         print(json.dumps(catalogue, indent=2))
         return
     print("Read this manual at the start of every session; use merit prompt <stage> next.")
-    print("merit apply is the only write path for governed artefacts: write a proposal")
+    print("merit apply is the only write path for proposed governed changes: write a proposal")
     print("under proposals/ and run merit apply. Never hand-edit governed artefacts.")
     print("merit ingest is the narrow create-only exception for source bundles.")
+    print("merit baseline computes its manifest through the same staged validation and rollback.")
     print("Copy quotes verbatim; never paraphrase a quote. If anchoring fails, downgrade")
     print("the claim to inferred with an explicit rationale; unsupported ideas are candidates.")
     print("The tool never merges or tags; human approval owns baseline handoff.")
@@ -313,6 +356,8 @@ COMMANDS: dict[str, Command] = {
     "ingest": Command(_ingest, _ingest_arguments),
     "validate": Command(_validate, _validate_arguments),
     "report": Command(_report, _report_arguments),
+    "questions": Command(_questions, _questions_arguments),
+    "baseline": Command(_baseline, _baseline_arguments),
     "anchor": Command(_anchor, _anchor_arguments),
     "apply": Command(_apply, _apply_arguments),
     "help-agent": Command(_help_agent, _help_agent_arguments),

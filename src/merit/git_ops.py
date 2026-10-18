@@ -45,6 +45,16 @@ def file_at(repo_root: Path, rev: str, path: str | Path) -> str | None:
     return _git(repo_root, "show", f"{rev}:{Path(path).as_posix()}")
 
 
+def file_bytes_at(repo_root: Path, rev: str, path: str | Path) -> bytes | None:
+    """Read exact blob bytes, including binary retained originals, read-only."""
+    try:
+        result = subprocess.run(["git", "show", f"{rev}:{Path(path).as_posix()}"],
+                                cwd=repo_root, capture_output=True, check=False)
+        return result.stdout if result.returncode == 0 else None
+    except OSError:
+        return None
+
+
 def files_at(repo_root: Path, rev: str, prefix: str | Path) -> list[str]:
     """Enumerate exact POSIX paths, including spaces and Unicode, read-only."""
     output = _git(repo_root, "ls-tree", "-r", "--name-only", "-z", rev,
