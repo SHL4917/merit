@@ -55,6 +55,78 @@ def test_save_handles_tracked_deletion_and_literal_magic(repo):
     assert git_ops.file_at(repo, "HEAD", "delete.txt") is None
 
 
+def deleted_directory(repo):
+    directory = repo / "gone"
+    directory.mkdir()
+    for name in ["first.txt", "[ab].txt"]:
+        (directory / name).write_text(name, encoding="utf-8")
+    (repo / "chosen.txt").write_text("before", encoding="utf-8")
+    (repo / "other.txt").write_text("before", encoding="utf-8")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "tracked directory")
+    for path in directory.iterdir():
+        path.unlink()
+    directory.rmdir()
+    (repo / "chosen.txt").write_text("after", encoding="utf-8")
+    (repo / "other.txt").write_text("after", encoding="utf-8")
+    git(repo, "add", "other.txt")
+
+
+@pytest.mark.parametrize("staged", [False, True])
+def test_save_rejects_deleted_directory_without_changing_index_or_worktree(repo, staged):
+    deleted_directory(repo)
+    if staged:
+        git(repo, "add", "--", "gone")
+    head = git(repo, "rev-parse", "HEAD")
+    index = (repo / ".git" / "index").read_bytes()
+
+    def worktree():
+        return {p.relative_to(repo).as_posix(): p.read_bytes() for p in repo.rglob("*")
+                if p.is_file() and ".git" not in p.relative_to(repo).parts}
+
+    before = worktree()
+    with pytest.raises(UsageError, match="individual repository files"):
+        operation("save")(repo, ["chosen.txt", "gone"], "Reject directory")
+    assert (repo / ".git" / "index").read_bytes() == index
+    assert worktree() == before
+    assert git(repo, "rev-parse", "HEAD") == head
+
+
+@pytest.mark.parametrize("staged", [False, True])
+def test_save_rejects_missing_tracked_symlink_without_staging(repo, staged):
+    (repo / "chosen.txt").write_text("target", encoding="utf-8")
+    git(repo, "add", "chosen.txt")
+    blob = git(repo, "rev-parse", ":chosen.txt")
+    # Build only a Git index entry: never create a filesystem symlink on Windows.
+    git(repo, "update-index", "--add", "--cacheinfo", f"120000,{blob},missing-link")
+    git(repo, "commit", "-m", "tracked link entry")
+    if staged:
+        git(repo, "add", "--", "missing-link")
+    (repo / "chosen.txt").write_text("after", encoding="utf-8")
+    head = git(repo, "rev-parse", "HEAD")
+    index = (repo / ".git" / "index").read_bytes()
+    with pytest.raises(UsageError, match="individual repository files"):
+        operation("save")(repo, ["chosen.txt", "missing-link"], "Reject link")
+    assert (repo / ".git" / "index").read_bytes() == index
+    assert (repo / "chosen.txt").read_text(encoding="utf-8") == "after"
+    assert not (repo / "missing-link").exists()
+    assert git(repo, "rev-parse", "HEAD") == head
+
+
+@pytest.mark.parametrize("staged", [False, True])
+def test_save_explicit_deleted_file_excludes_siblings(repo, staged):
+    deleted_directory(repo)
+    selected = "gone/[ab].txt"
+    if staged:
+        git(repo, "add", "--", f":(literal){selected}")
+    operation("save")(repo, [selected], "Only the selected deletion")
+    assert selected not in git(repo, "ls-tree", "-r", "--name-only", "HEAD").splitlines()
+    assert git(repo, "show", "HEAD:gone/first.txt") == "first.txt"
+    assert git(repo, "show", "HEAD:chosen.txt") == "before"
+    assert git(repo, "diff", "--cached", "--name-only") == "other.txt"
+    assert not (repo / "gone").exists()
+
+
 def test_cli_draft_and_save_resolve_files_from_invocation_directory(repo, monkeypatch, capsys):
     (repo / "merit.toml").write_text("", encoding="utf-8")
     directory = repo / "nested"

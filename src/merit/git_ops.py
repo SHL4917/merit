@@ -97,6 +97,13 @@ def save(repo_root: Path, paths: list[str | Path], message: str) -> str:
         raise UsageError("A checkpoint needs explicit file paths and a message.", fix=fix)
     root = Path(repo_root).resolve()
     selected = []
+    to_stage = []
+
+    def exact_file(output: str, name: str) -> bool:
+        return any(entry.partition("\t")[2] == name
+                   and entry.partition(" ")[0] in ("100644", "100755")
+                   for entry in output.split("\0"))
+
     for value in paths:
         path = Path(value)
         absolute = (root / path).resolve()
@@ -106,10 +113,23 @@ def save(repo_root: Path, paths: list[str | Path], message: str) -> str:
             raise UsageError(f"Checkpoint path is outside the repository: {value}", fix=fix) from None
         if not relative.parts or relative.parts[0].casefold() == ".git" or absolute.is_dir():
             raise UsageError(f"Checkpoint paths must name individual repository files: {value}", fix=fix)
-        # Missing files may be tracked deletions. Literal pathspecs prevent wildcard
-        # expansion, including for legal filenames containing [] or *.
-        selected.append(f":(literal){relative.as_posix()}")
-    _run(root, "git", "add", "-A", "--", *selected)
+        name = relative.as_posix()
+        pathspec = f":(literal){name}"
+        already_staged_deletion = False
+        if not absolute.exists():
+            indexed = _run(root, "git", "ls-files", "--stage", "-z", "--", pathspec)
+            if not exact_file(indexed, name):
+                historical = _run(root, "git", "ls-tree", "-z", "HEAD", "--", name)
+                if not exact_file(historical, name):
+                    raise UsageError(f"Checkpoint paths must name individual repository files: {value}", fix=fix)
+                already_staged_deletion = True
+        # Missing paths must be exact tracked files, never directory prefixes.
+        # Literal pathspecs prevent wildcard expansion in filenames containing [].
+        selected.append(pathspec)
+        if not already_staged_deletion:
+            to_stage.append(pathspec)
+    if to_stage:
+        _run(root, "git", "add", "-A", "--", *to_stage)
     return _run(root, "git", "commit", "--only", "-m", message, "--", *selected)
 
 
