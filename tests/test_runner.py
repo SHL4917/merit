@@ -11,7 +11,7 @@ import yaml
 
 from merit.cli import main
 from merit.ingest import ingest
-from merit.ingest.bundle import IMMUTABLE_META_FIELDS
+from merit.ingest.bundle import IMMUTABLE_META_FIELDS, OPTIONAL_META_FIELDS
 from merit.model import ID_PATTERNS
 from merit.scaffold import init
 
@@ -104,7 +104,7 @@ def test_filename_mismatch_is_v3(known_good):
 
 def test_source_meta_contract(known_good):
     document = schema("source_meta")
-    assert set(document["properties"]) == set(IMMUTABLE_META_FIELDS) | {"bundle_sha256"}
+    assert set(document["properties"]) == set(IMMUTABLE_META_FIELDS) | set(OPTIONAL_META_FIELDS) | {"bundle_sha256"}
     assert document["additionalProperties"] is False
     meta = yaml.safe_load(next((known_good / "sources").glob("*.meta.yaml")).read_text(encoding="utf-8"))
     for field in ("sha256", "origin_sha256", "bundle_sha256"):

@@ -26,6 +26,7 @@
         "transcript",
         "minutes",
         "email",
+        "document",
         "self_recorded_note"
       ]
     },
@@ -64,6 +65,12 @@
     },
     "ingested_by": {
       "type": "string"
+    },
+    "attribution": {
+      "type": "string",
+      "enum": [
+        "author"
+      ]
     },
     "bundle_sha256": {
       "type": "string",

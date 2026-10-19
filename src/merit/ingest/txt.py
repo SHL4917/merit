@@ -130,6 +130,31 @@ def unattributed_hints(texts: list[str]) -> list[str]:
     return [hint for hint, count in sorted(counts.items(), key=lambda item: -item[1]) if count]
 
 
+# Author attribution (``merit ingest --attribute-to-author``) credits a
+# single-author record's unlabelled lines to its recorded author. It never
+# credits words the author is quoting or forwarding from someone else:
+# transport headers, quoted replies, "On ... wrote:" lines and everything after
+# a forwarded/original-message separator stay structural.
+_EMAIL_HEADER = re.compile(r"(?:from|to|cc|bcc|subject|date|sent|reply-to)\s*:", re.IGNORECASE)
+_QUOTE_INTRO = re.compile(r"on\b.*\bwrote:", re.IGNORECASE)
+_FORWARD_SEPARATOR = re.compile(
+    r"-{2,}\s*(?:original message|forwarded message|begin forwarded message)\s*-{0,}:?", re.IGNORECASE)
+
+
+def credit_author(utterances: list[tuple[str, str]], author: str) -> list[tuple[str, str]]:
+    """Credit unlabelled lines to ``author``; labelled and quoted lines are kept as they are."""
+    credited = []
+    forwarded = False
+    for speaker, text in utterances:
+        if speaker == STRUCTURAL_SPEAKER and not forwarded:
+            if _FORWARD_SEPARATOR.fullmatch(text):
+                forwarded = True
+            elif not (text.startswith(">") or _EMAIL_HEADER.match(text) or _QUOTE_INTRO.fullmatch(text)):
+                speaker = author
+        credited.append((speaker, text))
+    return credited
+
+
 def parse_txt(text: str) -> list[tuple[str, str]]:
     """Parse normalised text into ``(speaker, text)`` utterances; blank lines are skipped."""
     utterances = []

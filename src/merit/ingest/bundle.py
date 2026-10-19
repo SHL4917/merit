@@ -3,6 +3,7 @@
 Normative definition (Tasks 9 and 14 must recompute this byte-identically):
 
     immutable   = {k: meta[k] for k in IMMUTABLE_META_FIELDS}
+                  | {k: meta[k] for k in OPTIONAL_META_FIELDS if k in meta}
     canonical_json = json.dumps(immutable, sort_keys=True, separators=(",", ":"))
     bundle_sha256  = sha256((sha256_hex + origin_sha256_hex + canonical_json)
                             .encode("utf-8")).hexdigest()
@@ -23,6 +24,9 @@ Normative definition (Tasks 9 and 14 must recompute this byte-identically):
 * List order is significant (``participants`` is never sorted); only mapping
   keys are sorted.
 * ``bundle_sha256`` is excluded from its own input.
+
+* An ``OPTIONAL_META_FIELDS`` key joins the input only when the sidecar has
+  it, so adding one never changes the hash of a bundle written without it.
 
 This protects the attribution fields: flipping ``record_type`` from
 ``self_recorded_note`` to ``transcript`` changes the hash (decision D11).
@@ -50,6 +54,9 @@ IMMUTABLE_META_FIELDS: tuple[str, ...] = (
     "ingested_on",
     "ingested_by",
 )
+# Recorded only when used; part of the hash when present.
+# ``attribution: author``: unlabelled lines were credited to ``authored_by``.
+OPTIONAL_META_FIELDS: tuple[str, ...] = ("attribution",)
 
 
 def _jsonable(value: Any) -> Any:
@@ -77,6 +84,7 @@ def bundle_sha256(meta: Mapping[str, Any]) -> str:
     if missing:
         raise ValueError(f"sidecar is missing immutable field(s): {', '.join(missing)}")
     immutable = {k: _jsonable(meta[k]) for k in IMMUTABLE_META_FIELDS}
+    immutable.update({k: _jsonable(meta[k]) for k in OPTIONAL_META_FIELDS if k in meta})
     canonical_json = json.dumps(
         immutable, sort_keys=True, separators=(",", ":"), allow_nan=False
     )

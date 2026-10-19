@@ -28,7 +28,7 @@ jobs:
         working-directory: ${{ runner.temp }}
         env:
           MERIT_WHEEL_URL: ${{ inputs.wheel-url }}
-          MERIT_WHEEL_SHA256: '2224274cf5ad598c8f95f4d0449c35ba7032481febe6233e85a6627943e80e9b'
+          MERIT_WHEEL_SHA256: '200294e40569861bdecba398bab64d0e2d7ac7f4caf792b72323270b0f0336e2'
         run: |
           set -euo pipefail
           [[ "$MERIT_WHEEL_SHA256" =~ ^[0-9a-fA-F]{64}$ ]] || {

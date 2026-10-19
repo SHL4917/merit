@@ -394,7 +394,8 @@ def source_reextraction(context):
         try:
             if origin.suffix.lower() not in SUPPORTED_SUFFIXES:
                 raise ValueError(f"unsupported original parser: {origin.suffix}")
-            if normalise_text(_canonical_text(raw, origin.suffix.lower())) == normalise_text(text):
+            author = data.get("authored_by") if data.get("attribution") == "author" else None
+            if normalise_text(_canonical_text(raw, origin.suffix.lower(), author)) == normalise_text(text):
                 continue
             message = "canonical text does not match re-extraction of retained original"
         except (MeritError, ValueError, TypeError) as exc:
