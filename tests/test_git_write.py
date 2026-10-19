@@ -289,3 +289,25 @@ def test_module_never_invokes_forbidden_git_actions():
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in ("_git", "_run"):
             words = [item.value for item in node.args if isinstance(item, ast.Constant)]
             assert "merge" not in words and "tag" not in words
+
+
+def test_save_without_identity_names_the_fix_and_hides_line_ending_noise(repo, monkeypatch, tmp_path):
+    # POC friction fix 15: the real cause used to be buried under CRLF advisories.
+    from test_doctor import isolate_git_identity
+    isolate_git_identity(monkeypatch, tmp_path)
+    git(repo, "config", "--unset", "user.name")
+    git(repo, "config", "--unset", "user.email")
+    git(repo, "config", "user.useConfigOnly", "true")
+    git(repo, "config", "core.autocrlf", "true")
+    (repo / "note.txt").write_bytes(b"line one\nline two\n")
+    with pytest.raises(EnvironmentError_) as excinfo:
+        git_ops.save(repo, ["note.txt"], "Checkpoint")
+    assert excinfo.value.fix == git_ops.IDENTITY_FIX
+    assert "in the working copy of" not in str(excinfo.value)
+
+
+def test_line_ending_noise_filter_keeps_everything_else():
+    noisy = ("warning: in the working copy of 'a.yaml', LF will be replaced by CRLF the next time Git touches it\n"
+             "fatal: unable to auto-detect email address")
+    assert git_ops._without_line_ending_noise(noisy) == "fatal: unable to auto-detect email address"
+    assert git_ops._without_line_ending_noise("plain failure") == "plain failure"

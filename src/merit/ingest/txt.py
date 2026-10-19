@@ -103,6 +103,33 @@ def split_speaker(line: str) -> tuple[str, str]:
     return match.group("name"), match.group("text").strip()
 
 
+# Near-miss label shapes, used only to explain an unattributed line. They never
+# attribute anything: the predicate above stays the single attribution rule.
+_NUMBER_PREFIX = re.compile(r"\[\d+\]\s*")
+_NUMBER_HINT = "lines start with a '[0001]' style number; strip the leading line numbers"
+_NEAR_MISSES = (
+    (re.compile(r"[^\s:]+ \([^)]*\):"),
+     "labels carry a '(ROLE)' suffix; drop it and record roles with --participant NAME=ROLE"),
+    (re.compile(r"[a-z][^\s:]*:(?: |$)"),
+     "labels start lower-case; a speaker label must start with a capital letter (e.g. 'Sh2:')"),
+)
+
+
+def unattributed_hints(texts: list[str]) -> list[str]:
+    """Explain why structural lines carry no speaker, most common shape first."""
+    counts = {_NUMBER_HINT: 0, **{hint: 0 for _, hint in _NEAR_MISSES}}
+    for text in texts:
+        number = _NUMBER_PREFIX.match(text)
+        if number and number.end() < len(text):
+            counts[_NUMBER_HINT] += 1
+            text = text[number.end():]
+        for pattern, hint in _NEAR_MISSES:
+            if pattern.match(text):
+                counts[hint] += 1
+                break
+    return [hint for hint, count in sorted(counts.items(), key=lambda item: -item[1]) if count]
+
+
 def parse_txt(text: str) -> list[tuple[str, str]]:
     """Parse normalised text into ``(speaker, text)`` utterances; blank lines are skipped."""
     utterances = []

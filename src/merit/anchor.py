@@ -35,6 +35,20 @@ def _span(lines):
     return QuoteMatch(lines[0].number, lines[-1].number, lines[0].speaker)
 
 
+def _likely_causes(lines, target):
+    """Explain the two common misses; diagnostics only, nothing new is accepted."""
+    if lines and all(line.speaker == "#" for line in lines):
+        yield ("source has no attributed lines (it was ingested without 'Name: text' speaker "
+               "labels), so nothing in it can be cited; ")
+    containing = [line for line in lines if target in normalise_whitespace(line.text)]
+    for line in containing[:3]:
+        cause = (f"quote is part of line {line.number}; a quote must be one or more whole "
+                 f"utterances, so quote the whole line: {line.text!r}")
+        if line.speaker == "#":
+            cause += f" (but line {line.number} is structural, with no speaker, and cannot be cited)"
+        yield cause + "; "
+
+
 def find_quote(lines, quote):
     """Find one complete line or contiguous join, using whitespace only."""
     target = normalise_whitespace(quote)
@@ -70,6 +84,7 @@ def find_quote(lines, quote):
     closest = max(lines, key=lambda line: SequenceMatcher(
         None, target, normalise_whitespace(line.text)).ratio(), default=None)
     detail = "source is empty" if closest is None else f"closest line {closest.number}: {closest.text!r}"
+    detail = "".join(_likely_causes(lines, target)) + detail
     # Diagnostics expose invisible and confusable characters without accepting them.
     unusual = sorted({c for c in quote + (closest.text if closest else "")
                       if ord(c) > 127 and not c.isspace()})

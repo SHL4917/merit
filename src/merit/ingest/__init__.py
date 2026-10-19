@@ -44,6 +44,7 @@ from merit.config import Config, load_config
 from merit.errors import EnvironmentError_, UsageError, ValidationFailed
 from merit.ingest.bundle import IMMUTABLE_META_FIELDS, bundle_sha256
 from merit.ingest.canonical import (
+    STRUCTURAL_SPEAKER,
     CanonicalLine,
     normalise_text,
     parse_canonical,
@@ -52,7 +53,7 @@ from merit.ingest.canonical import (
     sha256_text,
 )
 from merit.ingest.docx import parse_docx
-from merit.ingest.txt import parse_txt
+from merit.ingest.txt import parse_txt, unattributed_hints
 from merit.ingest.vtt import parse_vtt
 
 RECORD_TYPES = ("transcript", "minutes", "email", "self_recorded_note")
@@ -75,6 +76,9 @@ class IngestResult:
     origin: str
     meta: str
     bundle_sha256: str
+    attributed: int = 0
+    structural: int = 0
+    hints: tuple[str, ...] = ()
 
 
 # ------------------------------------------------------------------ validation
@@ -185,6 +189,27 @@ def _require_sequential(rendered: str, lines: Sequence[CanonicalLine]) -> None:
             "the canonical text does not round-trip through the canonical parser.",
             fix="report this file as a bug in the extractor; it cannot be ingested as is",
         )
+
+
+def _attribution(canonical: str) -> tuple[int, int, tuple[str, ...]]:
+    """(attributed, structural, hints) for rendered canonical text."""
+    lines = parse_canonical(canonical)
+    structural = [line.text for line in lines if line.speaker == STRUCTURAL_SPEAKER]
+    return len(lines) - len(structural), len(structural), tuple(unattributed_hints(structural))
+
+
+def _require_attribution(origin: Path, canonical: str, allow_unattributed: bool) -> tuple[int, int, tuple[str, ...]]:
+    """Refuse a source nothing can cite: evidence needs a speaker-attributed line."""
+    attributed, structural, hints = _attribution(canonical)
+    if attributed == 0 and not allow_unattributed:
+        detail = "; ".join(hints) if hints else "use 'Name: text' lines, one utterance per line"
+        raise ValidationFailed(
+            f"no line in {origin.name} has a speaker label ({structural} structural lines), so nothing "
+            f"in it could be cited as evidence. Nothing was written. Likely cause: {detail}.",
+            fix=f"fix the speaker labels in a copy of {_quote(origin)} and ingest that, "
+                "or re-run with --allow-unattributed to keep it as uncitable context",
+        )
+    return attributed, structural, hints
 
 
 # --------------------------------------------------------------- collision rule
@@ -359,6 +384,7 @@ def ingest(
     ingested_by: str,
     ingested_on: datetime.date | None = None,
     as_name: str | None = None,
+    allow_unattributed: bool = False,
 ) -> IngestResult:
     """Ingest one original into ``sources/`` as a hash-pinned bundle.
 
@@ -425,6 +451,7 @@ def ingest(
 
     data = origin.read_bytes()
     canonical = _canonical_text(data, suffix)
+    attributed, structural, hints = _require_attribution(origin, canonical, allow_unattributed)
     meta = {
         "source": rel_source,
         "sha256": sha256_text(canonical),
@@ -449,7 +476,8 @@ def ingest(
         staged_meta = _stage(staging, "source.meta.yaml", sidecar)
         _verify_staged(staged_raw, staged_source, staged_meta, meta)
         _place([(staged_raw, targets[0]), (staged_source, targets[1]), (staged_meta, targets[2])])
-    return IngestResult(True, rel_source, rel_raw, rel_meta, meta["bundle_sha256"])
+    return IngestResult(True, rel_source, rel_raw, rel_meta, meta["bundle_sha256"],
+                        attributed, structural, hints)
 
 
 def _verify_staged(raw: Path, source: Path, sidecar: Path, meta: dict[str, Any]) -> None:

@@ -106,6 +106,7 @@ def _ingest(args: argparse.Namespace) -> int | None:
         classification=args.classification,
         ingested_by=args.ingested_by,
         as_name=args.as_name,
+        allow_unattributed=args.allow_unattributed,
     )
     if not result.created:
         print(f"already ingested, nothing written: {result.source}")
@@ -115,6 +116,10 @@ def _ingest(args: argparse.Namespace) -> int | None:
     print(f"  canonical: {result.source}")
     print(f"  sidecar:   {result.meta}")
     print(f"  bundle_sha256: {result.bundle_sha256}")
+    print(f"  lines: {result.attributed} attributed, {result.structural} structural (no speaker; cannot be cited)")
+    if result.structural > result.attributed:
+        hints = "; ".join(result.hints) or "use 'Name: text' lines, one utterance per line"
+        print(f"warning: most lines have no speaker label and cannot be cited. Likely cause: {hints}")
     return None
 
 
@@ -148,15 +153,19 @@ def _apply(args: argparse.Namespace) -> None:
     """Apply an ungoverned proposal transactionally after complete validation."""
     from merit.apply import apply_proposal
     proposal = Path(args.proposal).resolve()
-    result = apply_proposal(find_repo_root(proposal.parent), proposal)
+    result = apply_proposal(find_repo_root(proposal.parent), proposal, check=args.check)
     for path in result.paths:
-        print(f"Applied: {path}")
+        print(f"{'Would write' if args.check else 'Applied'}: {path}")
     for warning in result.warnings:
         print(f"warning: {warning}")
+    if args.check:
+        print(f"Check passed; nothing written. Next: merit apply {_quote(Path(args.proposal))}")
 
 
 def _apply_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("proposal", help="proposal YAML file under proposals/")
+    parser.add_argument("--check", action="store_true",
+                        help="run the full apply (anchoring and every check) but write nothing")
 
 
 def _validate(args: argparse.Namespace) -> int:
@@ -321,6 +330,11 @@ def _ingest_arguments(parser: argparse.ArgumentParser) -> None:
         metavar="NAME",
         help="store under this name (no extension) instead of the file's own, to resolve a collision",
     )
+    parser.add_argument(
+        "--allow-unattributed",
+        action="store_true",
+        help="ingest even when no line has a 'Name: text' speaker label (nothing in it can be cited)",
+    )
 
 
 def command_catalogue(parser: argparse.ArgumentParser) -> list[dict]:
@@ -372,6 +386,8 @@ def _help_agent(args: argparse.Namespace) -> None:
     print("merit baseline computes its manifest through the same staged validation and rollback.")
     print("Copy quotes verbatim; never paraphrase a quote. If anchoring fails, downgrade")
     print("the claim to inferred with an explicit rationale; unsupported ideas are candidates.")
+    print("A quote is one or more whole canonical lines. .txt speakers must be 'Name: text'.")
+    print("Run merit apply --check <proposal> first; use ref:/\"@name\" instead of guessing IDs.")
     print("The tool never merges or tags; human approval owns baseline handoff.")
     print("Exit codes: 0 success; 1 validation failure; 2 usage error; 3 anchor failure; 4 environment error.")
     for command in catalogue:

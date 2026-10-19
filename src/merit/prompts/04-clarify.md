@@ -7,6 +7,16 @@ Propose `add_decision` with its record and resolved issues. A self-recorded note
 without confirmation remains provisional; a name alone is not confirmation.
 Use `confirm_decision` only with an anchored confirmation record.
 
+Confirmation rules (rule V9), before drafting `confirm_decision`:
+- The confirmation source must be `minutes`, `email` or `transcript`, never a
+  `self_recorded_note`.
+- `confirmed_by` must be the speaker of the quoted line or the source's `authored_by`.
+- If the decision rests on a self-recorded note, a different person must confirm it.
+- Provisional decisions block a baseline; tell the user who must confirm, and how,
+  before asking them for text.
+
+Run `merit apply --check <proposal>` before `merit apply`; it writes nothing.
+
 The only write path for governed artefacts is a proposal under `proposals/`
 followed by `merit apply <proposal>`. Never edit governed files directly.
 Copy quotes verbatim; never paraphrase a quote. If anchoring fails, downgrade

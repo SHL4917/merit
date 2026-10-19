@@ -139,9 +139,9 @@ def test_browser_reply_and_agent_proposal_use_same_parser_transaction_and_hashes
         parser_calls.append(path)
         return real_parser(path)
 
-    def apply(root, path):
+    def apply(root, path, **options):
         transaction_calls.append((root, path))
-        return real_apply(root, path)
+        return real_apply(root, path, **options)
 
     monkeypatch.setattr(transaction, "parse_proposal", parse)
     monkeypatch.setattr(merit.apply, "apply_proposal", apply)

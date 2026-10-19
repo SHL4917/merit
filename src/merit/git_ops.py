@@ -351,9 +351,21 @@ def _run(repo_root: Path, *args: str, input: str | None = None) -> str:
     except (OSError, ValueError) as exc:
         raise EnvironmentError_(f"Could not run {args[0]}: {exc}", fix=fix) from exc
     if result.returncode:
-        detail = (result.stderr or result.stdout).strip()
+        detail = _without_line_ending_noise((result.stderr or result.stdout).strip())
+        if args[0] == "git" and ("Author identity unknown" in detail or "tell me who you are" in detail):
+            fix = IDENTITY_FIX
         raise EnvironmentError_(f"{args[0]} {args[1]} failed ({result.returncode}): {detail}", fix=fix)
     return result.stdout.strip() or result.stderr.strip()
+
+
+IDENTITY_FIX = 'git config user.name "Your Name" && git config user.email "you@example.com"'
+
+
+def _without_line_ending_noise(detail: str) -> str:
+    """Drop git's per-file LF/CRLF advisories so the real failure is readable."""
+    kept = [line for line in detail.splitlines()
+            if not (line.startswith("warning: in the working copy of ") and "the next time Git touches it" in line)]
+    return "\n".join(kept).strip() or detail
 
 
 def start_draft(repo_root: Path, branch: str) -> str:
