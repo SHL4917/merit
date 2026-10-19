@@ -13,7 +13,7 @@ from subprocess import list2cmdline
 from merit import doctor as doctor_module
 from merit.config import find_repo_root
 from merit.errors import ExitCode, MeritError, UsageError
-from merit.ingest import ingest as ingest_source
+from merit.ingest import SINGLE_AUTHOR_TYPES, ingest as ingest_source
 from merit.ingest.metadata import inspect_metadata
 from merit.scaffold import init
 
@@ -107,6 +107,7 @@ def _ingest(args: argparse.Namespace) -> int | None:
         ingested_by=args.ingested_by,
         as_name=args.as_name,
         allow_unattributed=args.allow_unattributed,
+        attribute_to_author=args.attribute_to_author,
     )
     if not result.created:
         print(f"already ingested, nothing written: {result.source}")
@@ -117,9 +118,12 @@ def _ingest(args: argparse.Namespace) -> int | None:
     print(f"  sidecar:   {result.meta}")
     print(f"  bundle_sha256: {result.bundle_sha256}")
     print(f"  lines: {result.attributed} attributed, {result.structural} structural (no speaker; cannot be cited)")
-    if result.structural > result.attributed:
+    if result.structural > result.attributed and not args.attribute_to_author:
         hints = "; ".join(result.hints) or "use 'Name: text' lines, one utterance per line"
         print(f"warning: most lines have no speaker label and cannot be cited. Likely cause: {hints}")
+        if args.record_type in SINGLE_AUTHOR_TYPES and not args.attribute_to_author:
+            print(f"hint: if one person wrote this {args.record_type}, ingest it again with "
+                  "--attribute-to-author and --authored-by set to that person, using --as <new-name>")
     return None
 
 
@@ -312,7 +316,7 @@ def _ingest_arguments(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="report metadata embedded in the original, write nothing, and stop",
     )
-    parser.add_argument("--record-type", help="transcript | minutes | email | self_recorded_note")
+    parser.add_argument("--record-type", help="transcript | minutes | email | document | self_recorded_note")
     parser.add_argument("--authored-by", help="who produced this record, not who speaks in it")
     parser.add_argument("--session-date", help="when the session took place, YYYY-MM-DD")
     parser.add_argument(
@@ -334,6 +338,12 @@ def _ingest_arguments(parser: argparse.ArgumentParser) -> None:
         "--allow-unattributed",
         action="store_true",
         help="ingest even when no line has a 'Name: text' speaker label (nothing in it can be cited)",
+    )
+    parser.add_argument(
+        "--attribute-to-author",
+        action="store_true",
+        help="credit unlabelled lines to --authored-by; only for single-author records "
+             "(email, document, self_recorded_note); quoted and forwarded text stays uncredited",
     )
 
 
@@ -388,6 +398,7 @@ def _help_agent(args: argparse.Namespace) -> None:
     print("the claim to inferred with an explicit rationale; unsupported ideas are candidates.")
     print("A quote is one or more whole canonical lines. .txt speakers must be 'Name: text'.")
     print("Run merit apply --check <proposal> first; use ref:/\"@name\" instead of guessing IDs.")
+    print("Unlabelled email/document/note: ask the user who wrote it, then ingest with --attribute-to-author.")
     print("The tool never merges or tags; human approval owns baseline handoff.")
     print("Exit codes: 0 success; 1 validation failure; 2 usage error; 3 anchor failure; 4 environment error.")
     for command in catalogue:

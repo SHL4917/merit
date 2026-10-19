@@ -37,6 +37,7 @@ This is the tool repository. It holds no requirements data. Design: `docs/superp
 - `merit apply --check` is the same transaction returning before `_promote`; never give it a separate validation path.
 - Proposal refs (`ref:` / `"@name"`) are resolved op by op from the ID the earlier handler wrote; schema validation sees pattern-valid placeholders, so the packaged schema is unchanged. Never predict IDs.
 - Ingest refuses a source with zero attributed lines unless `--allow-unattributed`. The gate lives in `ingest()`, not `_canonical_text`, which V12 re-extraction shares. Near-miss label hints never change the speaker predicate.
+- `attribution: author` is an `OPTIONAL_META_FIELDS` sidecar key, hashed only when present, so pre-existing bundle hashes never change. V12 replays it through `_canonical_text(..., author)`. It is refused for `transcript`/`minutes` and `.vtt`; quoted, header and forwarded lines stay `#` (`txt.credit_author`).
 - All file I/O is explicitly UTF-8 (`encoding="utf-8"`). Never create a symlink: the target is Windows. Use `pathlib`.
 
 ## Non-obvious placement
@@ -50,6 +51,8 @@ This is the tool repository. It holds no requirements data. Design: `docs/superp
 - **Append-only sources became immutable sources.** A committed source is never edited, not even by appending: whole-file hashing makes appending incoherent, because the hash changes and invalidates every evidence entry already citing it. A correction or re-transcription is a new source; the link is a separate append-only supersession artefact, never an edit to either sidecar.
 - **A `proposed` provenance value became candidates.** Provenance is `stated` or `inferred`, with no third value. An ungrounded idea is a candidate, a separate artefact kind with no `evidence` field at all, so the central claim (every requirement resolves to a verbatim, speaker-attributed span) holds without a qualifying clause.
 - **V9 forbidding a provisional decision became V9 permitting it.** Earlier revisions had V9 reject a self-recorded note with no `confirmed_by`. That made the state unreachable: `merit apply` validates transactionally and would roll the decision back before anyone saw it, leaving `awaiting_confirmation` dead code and V8's handling of it unreachable. V9 permits the record; V8 blocks it from a baseline.
+
+- **"Attribution is never inferred" gained one explicit exception.** A single-author record (`email`, `document`, `self_recorded_note`) may credit its unlabelled lines to its recorded `authored_by` with `--attribute-to-author`. It is opt-in, recorded in the sidecar and bound by the bundle hash, and the agent must ask the user for the author, never guess. Without it, unlabelled emails and documents could not support evidence or confirm a decision. `document` became a fifth record type for the same reason.
 
 ## When to update this file
 

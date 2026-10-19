@@ -395,8 +395,8 @@ def test_missing_or_unknown_record_type_is_rejected_and_nothing_is_written(repo,
     assert snapshot(repo) == before
 
 
-def test_record_types_are_the_four_in_the_spec():
-    assert RECORD_TYPES == ("transcript", "minutes", "email", "self_recorded_note")
+def test_record_types_are_the_four_in_the_spec_plus_document():
+    assert RECORD_TYPES == ("transcript", "minutes", "email", "document", "self_recorded_note")
 
 
 @pytest.mark.parametrize("classification", [None, "", "SECRET", "internal"])
@@ -879,13 +879,13 @@ ALLOWED_FROM = {
     "dataclasses": {"dataclass"},
     "merit.config": {"Config", "load_config"},
     "merit.errors": {"EnvironmentError_", "UsageError", "ValidationFailed"},
-    "merit.ingest.bundle": {"IMMUTABLE_META_FIELDS", "bundle_sha256"},
+    "merit.ingest.bundle": {"IMMUTABLE_META_FIELDS", "OPTIONAL_META_FIELDS", "bundle_sha256"},
     "merit.ingest.canonical": {
         "CanonicalLine", "STRUCTURAL_SPEAKER", "normalise_text", "parse_canonical",
         "render_canonical", "sha256_bytes", "sha256_text",
     },
     "merit.ingest.docx": {"parse_docx", "read_xml_part"},
-    "merit.ingest.txt": {"parse_txt", "split_speaker", "unattributed_hints"},
+    "merit.ingest.txt": {"credit_author", "parse_txt", "split_speaker", "unattributed_hints"},
     "merit.ingest.vtt": {"parse_vtt"},
     "pathlib": {"Path"},
     "subprocess": {"list2cmdline"},  # a pure string function; the module is not importable
@@ -1878,3 +1878,141 @@ def test_cli_refuses_an_unattributed_source_with_exit_1(repo, incoming, monkeypa
     assert cli.main(cli_args(original)) == ExitCode.VALIDATION
     assert "no line in ami.txt has a speaker label" in capsys.readouterr().err
     assert cli.main([*cli_args(original), "--allow-unattributed"]) == 0
+
+
+# ------------------------------- author attribution (--attribute-to-author)
+
+from merit.ingest.txt import credit_author  # noqa: E402
+from merit.validate.runner import run_checks  # noqa: E402
+
+AUTHORED_EMAIL = (
+    "From: Jordan Reyes <jordan@example.com>\n"
+    "Subject: Re: remote pricing\n"
+    "\n"
+    "Hi all,\n"
+    "I can confirm the 25 euro price is the wholesale price.\n"
+    "Sam Ellis: and it is one price for every market.\n"
+    "On Mon, 19 Oct 2026 Sam Ellis wrote:\n"
+    "> Is 25 euro wholesale or retail?\n"
+    "Note: the retailer sets the shelf price.\n"
+    "Thanks, Jordan\n"
+    "---------- Forwarded message ---------\n"
+    "We should charge 30.\n"
+)
+EMAIL_KWARGS = {**KWARGS, "record_type": "email", "authored_by": "Jordan Reyes"}
+
+
+def test_credit_author_credits_only_the_authors_own_unlabelled_lines():
+    credited = credit_author(parse_txt(AUTHORED_EMAIL), "Jordan Reyes")
+    assert [speaker for speaker, _ in credited] == [
+        "#", "#",                      # transport headers
+        "Jordan Reyes", "Jordan Reyes",
+        "Sam Ellis",                   # a labelled line keeps its own speaker
+        "#", "#",                      # "On ... wrote:" and the quoted reply
+        "Jordan Reyes",                # a header-keyword prefix inside the body is the author's
+        "Jordan Reyes",
+        "#", "#",                      # the separator and everything forwarded after it
+    ]
+
+
+def test_author_attribution_records_itself_in_the_sidecar_and_hash(repo, incoming):
+    original = incoming / "email.txt"
+    original.write_bytes(AUTHORED_EMAIL.encode("utf-8"))
+    result = ingest(repo, original, **EMAIL_KWARGS, attribute_to_author=True)
+    assert (result.attributed, result.structural) == (5, 6)
+    meta = load_sidecar(repo, "2026-09-12-email")
+    assert meta["attribution"] == "author"
+    assert list(meta) == [*IMMUTABLE_META_FIELDS, "attribution", "bundle_sha256"]
+    assert meta["bundle_sha256"] == bundle_sha256(meta)
+    without = {k: v for k, v in meta.items() if k != "attribution"}
+    assert bundle_sha256(without) != meta["bundle_sha256"]  # the mode is bound by the hash
+    canonical = (repo / result.source).read_text(encoding="utf-8")
+    assert "[0004] Jordan Reyes: I can confirm the 25 euro price is the wholesale price.\n" in canonical
+    assert [f for f in run_checks(repo) if f.check_id in ("V1", "V12")] == []
+
+
+def test_a_bundle_without_the_field_keeps_its_original_hash(repo, incoming):
+    # Adding OPTIONAL_META_FIELDS must not change any existing bundle's hash.
+    import hashlib
+    import json
+    original = write_vtt(incoming)
+    ingest(repo, original, **KWARGS)
+    meta = load_sidecar(repo, "2026-09-12-interview")
+    assert "attribution" not in meta
+    immutable = {k: (v.isoformat() if isinstance(v, datetime.date) else v)
+                 for k, v in meta.items() if k in IMMUTABLE_META_FIELDS}
+    legacy = hashlib.sha256((meta["sha256"] + meta["origin_sha256"] + json.dumps(
+        immutable, sort_keys=True, separators=(",", ":"))).encode("utf-8")).hexdigest()
+    assert meta["bundle_sha256"] == legacy
+
+
+def test_v12_replays_author_attribution_from_the_sidecar(repo, incoming):
+    original = incoming / "email.txt"
+    original.write_bytes(AUTHORED_EMAIL.encode("utf-8"))
+    result = ingest(repo, original, **EMAIL_KWARGS, attribute_to_author=True)
+    canonical = repo / result.source
+    canonical.write_bytes(canonical.read_bytes().replace(b"[0004] Jordan Reyes:", b"[0004] Sam Ellis:"))
+    findings = run_checks(repo)
+    assert any(f.check_id == "V12" and "re-extraction" in f.message for f in findings)
+
+
+@pytest.mark.parametrize("record_type", ["transcript", "minutes"])
+def test_author_attribution_is_refused_for_multi_speaker_records(repo, incoming, record_type):
+    original = incoming / "email.txt"
+    original.write_bytes(AUTHORED_EMAIL.encode("utf-8"))
+    before = snapshot(repo)
+    with pytest.raises(UsageError, match="only for records one person wrote"):
+        ingest(repo, original, **{**EMAIL_KWARGS, "record_type": record_type}, attribute_to_author=True)
+    assert snapshot(repo) == before
+
+
+def test_author_attribution_is_refused_for_vtt_and_for_an_unlabellable_author(repo, incoming):
+    with pytest.raises(UsageError, match="does not apply to .vtt"):
+        ingest(repo, write_vtt(incoming), **EMAIL_KWARGS, attribute_to_author=True)
+    original = incoming / "email.txt"
+    original.write_bytes(AUTHORED_EMAIL.encode("utf-8"))
+    with pytest.raises(UsageError, match="cannot be a speaker label"):
+        ingest(repo, original, **{**EMAIL_KWARGS, "authored_by": "Re: Jordan"}, attribute_to_author=True)
+
+
+def test_document_records_and_docx_support_author_attribution(repo, incoming):
+    path = make_docx(incoming / "memo.docx", ["Pricing memo", "The price is 25 euro wholesale."])
+    result = ingest(repo, path, **{**EMAIL_KWARGS, "record_type": "document"}, attribute_to_author=True)
+    canonical = (repo / result.source).read_text(encoding="utf-8")
+    assert canonical == ("[0001] Jordan Reyes: Pricing memo\n"
+                         "[0002] Jordan Reyes: The price is 25 euro wholesale.\n")
+
+
+def test_reingesting_labelled_text_under_a_different_attribution_is_refused(repo, incoming):
+    # Fully labelled text renders the same either way, so this would otherwise be a silent no-op.
+    original = incoming / "labelled.txt"
+    original.write_bytes(b"Jordan Reyes: We need offline mode.\n")
+    ingest(repo, original, **EMAIL_KWARGS)
+    with pytest.raises(UsageError, match="attribution"):
+        ingest(repo, original, **EMAIL_KWARGS, attribute_to_author=True)
+
+
+def test_the_unattributed_refusal_suggests_author_attribution_for_single_author_records(repo, incoming):
+    original = incoming / "plain.txt"
+    original.write_bytes(b"Hi all,\nThe price is wholesale.\n")
+    with pytest.raises(ValidationFailed, match="re-run with --attribute-to-author"):
+        ingest(repo, original, **EMAIL_KWARGS)
+    with pytest.raises(ValidationFailed) as excinfo:
+        ingest(repo, original, **KWARGS)  # a transcript: no such suggestion
+    assert "--attribute-to-author" not in str(excinfo.value)
+
+
+def test_cli_hints_author_attribution_and_the_intake_playbook_explains_it(repo, incoming, monkeypatch, capsys):
+    monkeypatch.chdir(repo)
+    original = incoming / "mostly.txt"
+    original.write_bytes(b"Hi all,\nThe price is wholesale.\nSam Ellis: agreed\n")
+    args = [*cli_args(original)]
+    args[args.index("transcript")] = "email"
+    assert cli.main(args) == 0
+    assert "hint: if one person wrote this email" in capsys.readouterr().out
+    assert cli.main([*args, "--attribute-to-author", "--as", "mostly-authored"]) == 0
+    out = capsys.readouterr().out
+    assert "lines: 3 attributed, 0 structural" in out and "warning:" not in out
+    assert cli.main(["prompt", "intake"]) == 0
+    playbook = " ".join(capsys.readouterr().out.split())
+    assert "ask who wrote it" in playbook and "Never guess or infer the author" in playbook

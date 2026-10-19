@@ -8,6 +8,14 @@ A `.txt` line is attributed only as `Name: text`, with a capitalised label of on
 to four words; anything else (`[0001]` prefixes, `NAME (ROLE):`, lower-case labels)
 is structural and cannot be cited. Check the `lines:` summary ingest prints, and if
 labels are wrong, fix them in a copy of the file before ingesting.
+
+When an email, document or self-recorded note has no speaker labels, its text
+cannot be cited as it stands. Suggest author attribution to the user: ask who
+wrote it, and only with their answer re-run `merit ingest` with
+`--attribute-to-author` and `--authored-by "<that person>"`, under `--as` if a
+bundle was already created. Never guess or infer the author. Quoted replies,
+email headers and forwarded text stay uncredited. Never use it for a transcript
+or minutes: label each speaker's lines instead.
 Read the canonical source and its sidecar before drafting; do not alter either.
 
 For governed artefacts, the only write path is a proposal under `proposals/`

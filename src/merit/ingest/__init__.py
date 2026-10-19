@@ -42,7 +42,7 @@ import yaml
 import merit
 from merit.config import Config, load_config
 from merit.errors import EnvironmentError_, UsageError, ValidationFailed
-from merit.ingest.bundle import IMMUTABLE_META_FIELDS, bundle_sha256
+from merit.ingest.bundle import IMMUTABLE_META_FIELDS, OPTIONAL_META_FIELDS, bundle_sha256
 from merit.ingest.canonical import (
     STRUCTURAL_SPEAKER,
     CanonicalLine,
@@ -53,10 +53,13 @@ from merit.ingest.canonical import (
     sha256_text,
 )
 from merit.ingest.docx import parse_docx
-from merit.ingest.txt import parse_txt, unattributed_hints
+from merit.ingest.txt import credit_author, parse_txt, unattributed_hints
 from merit.ingest.vtt import parse_vtt
 
-RECORD_TYPES = ("transcript", "minutes", "email", "self_recorded_note")
+RECORD_TYPES = ("transcript", "minutes", "email", "document", "self_recorded_note")
+# Records one person wrote, whose unlabelled lines --attribute-to-author may credit
+# to that person. Transcripts and minutes have several speakers, so they never qualify.
+SINGLE_AUTHOR_TYPES = ("email", "document", "self_recorded_note")
 SUPPORTED_SUFFIXES = (".vtt", ".docx", ".txt")
 
 # --as names become a filename and a slug: no separators, nothing hidden.
@@ -64,7 +67,7 @@ _AS_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 _MAX_LINES = 9999
 # The attribution D11 protects. ingested_by and ingested_on are deliberately
 # absent: they legitimately differ on a later re-ingest.
-_DIVERGENT_FIELDS = ("record_type", "classification", "participants", "authored_by")
+_DIVERGENT_FIELDS = ("record_type", "classification", "participants", "authored_by", "attribution")
 
 
 @dataclass(frozen=True)
@@ -146,8 +149,11 @@ def _slug(name: str) -> str:
 # ------------------------------------------------------------------ extraction
 
 
-def _canonical_text(data: bytes, suffix: str) -> str:
-    """Parse an original into rendered canonical text, numbered from 0001."""
+def _canonical_text(data: bytes, suffix: str, author: str | None = None) -> str:
+    """Parse an original into rendered canonical text, numbered from 0001.
+
+    ``author`` credits unlabelled lines to that person (``--attribute-to-author``).
+    """
     if suffix == ".docx":
         utterances = parse_docx(data)
     else:
@@ -159,6 +165,8 @@ def _canonical_text(data: bytes, suffix: str) -> str:
                 fix="re-save the file as UTF-8 text, then re-run `merit ingest`",
             ) from exc
         utterances = parse_vtt(text) if suffix == ".vtt" else parse_txt(text)
+    if author is not None:
+        utterances = credit_author(utterances, author)
     if not utterances:
         raise ValidationFailed(
             "no utterances were found in the file.",
@@ -198,11 +206,16 @@ def _attribution(canonical: str) -> tuple[int, int, tuple[str, ...]]:
     return len(lines) - len(structural), len(structural), tuple(unattributed_hints(structural))
 
 
-def _require_attribution(origin: Path, canonical: str, allow_unattributed: bool) -> tuple[int, int, tuple[str, ...]]:
+def _require_attribution(
+    origin: Path, canonical: str, allow_unattributed: bool, record_type: str | None = None
+) -> tuple[int, int, tuple[str, ...]]:
     """Refuse a source nothing can cite: evidence needs a speaker-attributed line."""
     attributed, structural, hints = _attribution(canonical)
     if attributed == 0 and not allow_unattributed:
         detail = "; ".join(hints) if hints else "use 'Name: text' lines, one utterance per line"
+        if record_type in SINGLE_AUTHOR_TYPES:
+            detail += (f". If one person wrote this {record_type}, re-run with --attribute-to-author "
+                       "and --authored-by set to that person")
         raise ValidationFailed(
             f"no line in {origin.name} has a speaker label ({structural} structural lines), so nothing "
             f"in it could be cited as evidence. Nothing was written. Likely cause: {detail}.",
@@ -210,6 +223,30 @@ def _require_attribution(origin: Path, canonical: str, allow_unattributed: bool)
                 "or re-run with --allow-unattributed to keep it as uncitable context",
         )
     return attributed, structural, hints
+
+
+def _check_author_attribution(origin: Path, record_type: str | None, authored_by: str, suffix: str) -> str:
+    """The author to credit, or a usage error when the record is not single-author."""
+    if record_type not in SINGLE_AUTHOR_TYPES:
+        raise UsageError(
+            f"--attribute-to-author credits every unlabelled line to --authored-by, so it is only for "
+            f"records one person wrote ({', '.join(SINGLE_AUTHOR_TYPES)}); a {record_type} has several "
+            "speakers, so label each line 'Name: text' instead.",
+            fix=f"merit ingest {_quote(origin)} --record-type <{'|'.join(SINGLE_AUTHOR_TYPES)}> (same other options)",
+        )
+    if suffix == ".vtt":
+        raise UsageError(
+            "--attribute-to-author does not apply to .vtt: WebVTT attributes speech through <v> voice spans.",
+            fix=f"merit ingest {_quote(origin)} (same other options, without --attribute-to-author)",
+        )
+    author = authored_by.strip()
+    if ": " in author or author.startswith("#"):
+        raise UsageError(
+            f"--authored-by {authored_by!r} cannot be a speaker label: it must not contain ': ' "
+            "or start with '#'.",
+            fix=f"merit ingest {_quote(origin)} --authored-by \"<Name>\" --attribute-to-author (same other options)",
+        )
+    return author
 
 
 # --------------------------------------------------------------- collision rule
@@ -385,6 +422,7 @@ def ingest(
     ingested_on: datetime.date | None = None,
     as_name: str | None = None,
     allow_unattributed: bool = False,
+    attribute_to_author: bool = False,
 ) -> IngestResult:
     """Ingest one original into ``sources/`` as a hash-pinned bundle.
 
@@ -416,6 +454,8 @@ def ingest(
         )
 
     suffix = origin.suffix.lower()
+    author = _check_author_attribution(origin, record_type, authored_by, suffix) if attribute_to_author else None
+    attribution = "author" if attribute_to_author else None
     raw_name = f"{as_name}{origin.suffix}" if as_name else origin.name
     stem = f"{session_date.isoformat()}-{_slug(as_name or origin.stem)}"
     if not _slug(as_name or origin.stem):
@@ -432,7 +472,7 @@ def ingest(
     existing = _existing_paths(targets)
     if existing:
         data = origin.read_bytes()
-        canonical = _canonical_text(data, suffix)
+        canonical = _canonical_text(data, suffix, author)
         meta = _identical_sidecar(targets[2], sha256_bytes(data), sha256_text(canonical))
         if meta is not None:
             supplied = dict(
@@ -440,6 +480,7 @@ def ingest(
                 classification=classification,
                 participants=participants,
                 authored_by=authored_by,
+                attribution=attribution,
             )
             return _no_op_or_raise(repo_root, origin, meta, supplied, rel_meta)
         names = ", ".join(p.relative_to(repo_root).as_posix() for p in existing)
@@ -450,8 +491,8 @@ def ingest(
         )
 
     data = origin.read_bytes()
-    canonical = _canonical_text(data, suffix)
-    attributed, structural, hints = _require_attribution(origin, canonical, allow_unattributed)
+    canonical = _canonical_text(data, suffix, author)
+    attributed, structural, hints = _require_attribution(origin, canonical, allow_unattributed, record_type)
     meta = {
         "source": rel_source,
         "sha256": sha256_text(canonical),
@@ -466,6 +507,8 @@ def ingest(
         "ingested_on": ingested_on or datetime.date.today(),
         "ingested_by": ingested_by,
     }
+    if attribution is not None:
+        meta["attribution"] = attribution
     meta["bundle_sha256"] = bundle_sha256(meta)
     sidecar = yaml.safe_dump(meta, sort_keys=False, allow_unicode=True).encode("utf-8")
 
@@ -488,7 +531,8 @@ def _verify_staged(raw: Path, source: Path, sidecar: Path, meta: dict[str, Any])
         problems.append("the staged original differs from the file supplied")
     if sha256_text(source.read_bytes().decode("utf-8")) != meta["sha256"]:
         problems.append("the staged canonical text does not match its sha256")
-    if loaded != meta or list(loaded) != [*IMMUTABLE_META_FIELDS, "bundle_sha256"]:
+    expected = [*IMMUTABLE_META_FIELDS, *(k for k in OPTIONAL_META_FIELDS if k in meta), "bundle_sha256"]
+    if loaded != meta or list(loaded) != expected:
         problems.append("the staged sidecar does not read back as written")
     elif bundle_sha256(loaded) != loaded["bundle_sha256"]:
         problems.append("the staged sidecar's bundle_sha256 does not recompute")
