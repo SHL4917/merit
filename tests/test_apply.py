@@ -336,3 +336,104 @@ def test_late_promotion_failure_restores_original_files_and_proposal(project, mo
         apply_proposal(root, path)
     assert snapshot(root) == before
     assert root.stat().st_mtime_ns == root_mtime
+
+
+# ------------------------------------------------ apply --check (POC friction fix 5)
+
+def test_check_runs_the_full_transaction_but_writes_nothing(project, capsys):
+    root = project[0]
+    path = proposal(root, requirement(project))
+    before = snapshot(root)
+    result = apply_proposal(root, path, check=True)
+    assert [p.name for p in result.paths] == ["REQ-SMP-0002.yaml"]
+    assert snapshot(root) == before and path.is_file()
+    assert main(["apply", "--check", str(path)]) == 0
+    out = capsys.readouterr().out
+    assert "Would write:" in out and "nothing written" in out
+    assert snapshot(root) == before
+    # The real apply then writes exactly what the check reported.
+    assert apply_proposal(root, path).paths == result.paths
+
+
+def test_check_fails_like_apply_with_the_same_exit_code(project, capsys):
+    root = project[0]
+    op = requirement(project)
+    op["evidence"][0]["quote"] = "words nobody said"
+    path = proposal(root, op)
+    before = snapshot(root)
+    with pytest.raises(AnchorError, match="operation index 0"):
+        apply_proposal(root, path, check=True)
+    assert main(["apply", "--check", str(path)]) == main(["apply", str(path)]) == 3
+    assert snapshot(root) == before
+
+
+def test_a_self_recorded_confirmation_tells_the_user_what_record_is_needed(project):
+    # POC friction fix 9: the V9 rule used to surface with no next step.
+    root, _, issue, decision, _ = project
+    save(root, "issues", issue)
+    apply_proposal(root, proposal(root, decision_op(project)))
+    path = proposal(root, dict(op="confirm_decision", id="DEC-0001", confirmed_by="Jordan",
+                               confirmation_record=unanchored(decision["record"])))
+    with pytest.raises(ValidationFailed, match="self-recorded note") as excinfo:
+        apply_proposal(root, path, check=True)
+    message = str(excinfo.value)
+    assert "hint: get the confirmation from a second person" in message
+    assert "--record-type minutes|email" in message
+    assert "merit-apply-" not in message.split("hint:", 1)[1]
+
+
+def test_the_clarify_playbook_states_the_confirmation_rules_and_check(capsys):
+    assert main(["prompt", "clarify"]) == 0
+    text = capsys.readouterr().out
+    assert "never a\n  `self_recorded_note`" in text and "merit apply --check" in text
+
+
+# ---------------------------------------- proposal-local refs (POC friction fix 7)
+
+def test_refs_link_a_new_requirement_to_a_later_operation_in_one_proposal(project):
+    root, req, issue, *_ = project
+    first = dict(requirement(project), ref="logs")
+    second = dict(requirement(project), statement="Keep audit logs", ref="audit")
+    issue_op = {k: v for k, v in issue.items() if k not in ("id", "schema_version")}
+    issue_op.update(op="add_issue", evidence=[unanchored(e) for e in issue["evidence"]],
+                    affects=["@logs", "@audit"], ref="gap")
+    criterion = dict(op="add_acceptance_criterion", id="@audit", criterion="Retain one year")
+    path = proposal(root, first, second, issue_op, criterion)
+    result = apply_proposal(root, path)
+    repo = load_repo(root)
+    assert repo.issues["ISS-0001"].affects == ["REQ-SMP-0002", "REQ-SMP-0003"]
+    assert repo.requirements["REQ-SMP-0003"].acceptance_criteria[-1] == "Retain one year"
+    assert all("ref" not in yaml.safe_load(p.read_text(encoding="utf-8")) for p in result.paths)
+
+
+@pytest.mark.parametrize("case,message", [
+    ("unknown", "operation index 0: unknown reference @nope"),
+    ("forward", "operation index 0: unknown reference @later"),
+    ("duplicate", "operation index 1: duplicate ref 'logs'"),
+    ("not_allocating", "operation index 1: ref is only allowed on"),
+])
+def test_bad_refs_are_usage_errors_naming_the_operation(project, case, message):
+    root, req, *_ = project
+    if case == "unknown":
+        ops = [dict(op="add_acceptance_criterion", id="@nope", criterion="x")]
+    elif case == "forward":
+        ops = [dict(op="add_acceptance_criterion", id="@later", criterion="x"),
+               dict(requirement(project), ref="later")]
+    elif case == "duplicate":
+        ops = [dict(requirement(project), ref="logs"), dict(requirement(project), ref="logs")]
+    else:
+        ops = [dict(requirement(project), ref="logs"),
+               dict(op="add_acceptance_criterion", id="@logs", criterion="x", ref="crit")]
+    path = proposal(root, *ops)
+    before = snapshot(root)
+    with pytest.raises(UsageError, match=re.escape(message)):
+        apply_proposal(root, path)
+    assert snapshot(root) == before
+
+
+def test_a_ref_of_the_wrong_kind_fails_the_schema(project):
+    root = project[0]
+    path = proposal(root, dict(op="add_candidate", statement="Idea", rationale="Explore", ref="idea"),
+                    dict(op="add_acceptance_criterion", id="@idea", criterion="x"))
+    with pytest.raises(UsageError, match="operation index 1"):
+        apply_proposal(root, path)

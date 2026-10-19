@@ -229,3 +229,28 @@ def test_empty_preanchored_quote_fails_anchor_and_v5(anchored_repo, mode):
     errors = [f for f in run_checks(root) if f.severity == "error"]
     assert len(errors) == 1 and errors[0].check_id == "V5"
     assert errors[0].path == path and "empty quote" in errors[0].message
+
+
+# ------------------------------------------- diagnostic misses (POC friction fix 6)
+
+def test_a_fragment_quote_names_the_whole_line_to_quote():
+    from merit.anchor import find_quote
+    lines = [CanonicalLine(1, "Sam", "Um yes it is a design a new remote control um as you can see"),
+             CanonicalLine(2, "Lee", "Uh-huh")]
+    with pytest.raises(AnchorError, match=r"part of line 1;.*whole line: 'Um yes it is a design") as excinfo:
+        find_quote(lines, "a design a new remote control")
+    assert "closest line" in str(excinfo.value)
+
+
+def test_a_fragment_of_a_structural_line_says_it_cannot_be_cited():
+    from merit.anchor import find_quote
+    lines = [CanonicalLine(1, "#", "[0046] FEE005 (PM): a new remote control")]
+    with pytest.raises(AnchorError, match="no attributed lines.*part of line 1.*structural"):
+        find_quote(lines, "a new remote control")
+
+
+def test_a_miss_against_a_normal_source_keeps_the_plain_diagnostic():
+    from merit.anchor import find_quote
+    with pytest.raises(AnchorError) as excinfo:
+        find_quote([CanonicalLine(1, "Sam", "It's ready.")], "Nothing like it")
+    assert "part of line" not in str(excinfo.value) and "no attributed" not in str(excinfo.value)

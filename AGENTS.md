@@ -34,6 +34,9 @@ This is the tool repository. It holds no requirements data. Design: `docs/superp
 - Apply handlers write only to staging. ID allocation reads staging; rollback consumes no IDs. The transaction calls `run_checks(staging, context_root=real_repo)` so V2/V4 retain their historical boundary and configuration. Never replace that call with validation of a bare temporary repo.
 - Baselines select only requirements already marked `baselined`; draft/clarifying items block preparation, deferred items retain reasons, withdrawn items are excluded. Hash UTF-8 governed text with normalized line endings, but retained `sources/raw/` originals as exact bytes. Doctor enumerates tagged files with `files_at`, including extra files, and reads binary blobs through `file_bytes_at`.
 - `add_decision` records issue status `resolved` and `resolved_by`; derived status still reads `awaiting_confirmation` for a provisional decision. Supersession writes a new artefact and never changes a sidecar.
+- `merit apply --check` is the same transaction returning before `_promote`; never give it a separate validation path.
+- Proposal refs (`ref:` / `"@name"`) are resolved op by op from the ID the earlier handler wrote; schema validation sees pattern-valid placeholders, so the packaged schema is unchanged. Never predict IDs.
+- Ingest refuses a source with zero attributed lines unless `--allow-unattributed`. The gate lives in `ingest()`, not `_canonical_text`, which V12 re-extraction shares. Near-miss label hints never change the speaker predicate.
 - All file I/O is explicitly UTF-8 (`encoding="utf-8"`). Never create a symlink: the target is Windows. Use `pathlib`.
 
 ## Non-obvious placement

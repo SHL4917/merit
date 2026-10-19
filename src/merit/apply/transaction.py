@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from merit.apply.operations import HANDLERS
-from merit.apply.proposal import parse_proposal
+from merit.apply.proposal import parse_proposal, resolve_refs
 from merit.errors import EnvironmentError_, MeritError, UsageError, ValidationFailed
 from merit.model import ARTEFACT_DIRS, is_provisional, load_repo
 from merit.validate.runner import run_checks
@@ -100,7 +100,8 @@ def apply_baseline(repo_root, prepare):
         raise EnvironmentError_(f"cannot prepare baseline: {exc}", fix="merit baseline") from exc
 
 
-def apply_proposal(repo_root, proposal_path):
+def apply_proposal(repo_root, proposal_path, check=False):
+    """Apply a proposal; with ``check`` run the identical transaction but promote nothing."""
     root = Path(repo_root).resolve()
     proposal = Path(proposal_path).resolve()
     if not proposal.is_relative_to(root / "proposals") or not proposal.is_file():
@@ -118,9 +119,15 @@ def apply_proposal(repo_root, proposal_path):
             backup.mkdir()
             _stage(root, stage)
             written = {}
+            allocated = {}
             for index, operation in enumerate(data["operations"]):
-                for path in HANDLERS[operation["op"]](stage, operation):
+                operation, ref = resolve_refs(operation, allocated, index, fix)
+                paths = HANDLERS[operation["op"]](stage, operation)
+                for path in paths:
                     written[path.relative_to(stage)] = index
+                if ref is not None:
+                    # Every ref-capable handler writes its new artefact first.
+                    allocated[ref] = paths[0].stem
             # Always run the entire suite, using the real config AND git history.
             findings = run_checks(stage, context_root=root)
             errors = [f for f in findings if f.severity == "error"]
@@ -131,6 +138,9 @@ def apply_proposal(repo_root, proposal_path):
                     owner = written.get(relative, index)
                     details.append(f"operation index {owner}: {finding.check_id}: "
                                    f"{relative}: {finding.message}")
+                # Most fixes name a staged path that vanishes; keep only portable advice.
+                hints = dict.fromkeys(f.fix for f in errors if str(stage) not in f.fix)
+                details += [f"hint: {hint}" for hint in hints]
                 raise ValidationFailed("; ".join(details), fix=fix)
             if _files(stage / "sources") != _files(root / "sources"):
                 raise UsageError("sources may only be created by merit ingest", fix="merit validate")
@@ -138,6 +148,8 @@ def apply_proposal(repo_root, proposal_path):
             warnings = tuple(f"{d.id} is provisional; awaiting_confirmation"
                              for d in repo.decisions.values() if is_provisional(d, repo)
                              and Path("decisions", d.id + ".yaml") in written)
+            if check:
+                return ApplyResult(tuple(root / p for p in written), warnings)
             _promote(root, stage, backup, proposal)
             return ApplyResult(tuple(root / p for p in written), warnings)
     except MeritError as exc:

@@ -29,9 +29,9 @@ def decision_rules(context):
     for decision in context.repo.decisions.values():
         path = context.artefact_root / "decisions" / (decision.id + ".yaml")
 
-        def fail(message):
+        def fail(message, fix=None):
             findings.append(Finding("V9", path, message,
-                                    f"correct the decision evidence in {path}, then run: merit validate"))
+                                    fix or f"correct the decision evidence in {path}, then run: merit validate"))
 
         if not decision.resolves or any(identity not in context.repo.issues for identity in decision.resolves):
             fail("resolves must name at least one existing issue and no unknown issues")
@@ -49,8 +49,15 @@ def decision_rules(context):
                 fail(f"{location}: {exc}")
         defect = model.confirmation_defect(decision, context.repo)
         if defect is not None:
-            fail(defect)
+            fail(defect, _CONFIRMATION_FIX)
     return findings
+
+
+# Every confirmation defect has the same remedy: a record from the confirming person.
+_CONFIRMATION_FIX = (
+    "get the confirmation from a second person as minutes or an email in which they speak "
+    "('Name: ...' lines) or that they authored; ingest it with --record-type minutes|email and "
+    "--authored-by <confirmer>; set confirmed_by to that person; check with merit apply --check <proposal>")
 
 
 @register("V10")

@@ -885,7 +885,7 @@ ALLOWED_FROM = {
         "render_canonical", "sha256_bytes", "sha256_text",
     },
     "merit.ingest.docx": {"parse_docx", "read_xml_part"},
-    "merit.ingest.txt": {"parse_txt", "split_speaker"},
+    "merit.ingest.txt": {"parse_txt", "split_speaker", "unattributed_hints"},
     "merit.ingest.vtt": {"parse_vtt"},
     "pathlib": {"Path"},
     "subprocess": {"list2cmdline"},  # a pure string function; the module is not importable
@@ -1820,3 +1820,61 @@ def test_a_full_width_colon_does_not_attribute_a_non_name_prefix():
 def test_underscore_diarisation_labels_survive_a_whole_transcript():
     text = "SPEAKER_00: first\nSPEAKER_01: second\nSPEAKER_00: third\n"
     assert parse_txt(text) == [("SPEAKER_00", "first"), ("SPEAKER_01", "second"), ("SPEAKER_00", "third")]
+
+
+# ------------------------------------------------- attribution gate (POC friction fix 1)
+
+AMI_STYLE = (
+    "# Speakers: MEE006 (ID), FEE005 (PM)\n"
+    "[0001] FEE005 (PM): Um yes it is a design a new remote control\n"
+    "[0002] MEE006 (ID): Uh-huh\n"
+)
+
+
+def test_a_source_with_no_attributed_line_is_refused_with_hints_and_writes_nothing(repo, incoming):
+    original = incoming / "ami.txt"
+    original.write_bytes(AMI_STYLE.encode("utf-8"))
+    before = snapshot(repo)
+    with pytest.raises(ValidationFailed) as excinfo:
+        ingest(repo, original, **KWARGS)
+    message = str(excinfo.value)
+    assert "no line in ami.txt has a speaker label" in message
+    assert "strip the leading line numbers" in message and "(ROLE)" in message
+    assert "--allow-unattributed" in excinfo.value.fix
+    assert snapshot(repo) == before
+
+
+def test_allow_unattributed_ingests_and_reports_the_counts(repo, incoming):
+    original = incoming / "ami.txt"
+    original.write_bytes(AMI_STYLE.encode("utf-8"))
+    result = ingest(repo, original, **KWARGS, allow_unattributed=True)
+    assert result.created and (result.attributed, result.structural) == (0, 3)
+    assert any("line numbers" in hint for hint in result.hints)
+
+
+def test_ingest_reports_attributed_and_structural_counts(repo, incoming):
+    original = incoming / "mixed.txt"
+    original.write_bytes(b"# header\nJordan Reyes: We need offline mode.\nsam: lower-case label\n")
+    result = ingest(repo, original, **KWARGS)
+    assert (result.attributed, result.structural) == (1, 2)
+    assert result.hints == ("labels start lower-case; a speaker label must start with a capital letter (e.g. 'Sh2:')",)
+
+
+def test_cli_ingest_prints_the_line_summary_and_warns_when_most_lines_are_unattributed(
+        repo, incoming, monkeypatch, capsys):
+    monkeypatch.chdir(repo)
+    original = incoming / "mostly.txt"
+    original.write_bytes(b"[0001] A (PM): x\n[0002] B (ID): y\nJordan Reyes: z\n")
+    assert cli.main(cli_args(original)) == 0
+    out = capsys.readouterr().out
+    assert "lines: 1 attributed, 2 structural" in out
+    assert "warning: most lines have no speaker label" in out
+
+
+def test_cli_refuses_an_unattributed_source_with_exit_1(repo, incoming, monkeypatch, capsys):
+    monkeypatch.chdir(repo)
+    original = incoming / "ami.txt"
+    original.write_bytes(AMI_STYLE.encode("utf-8"))
+    assert cli.main(cli_args(original)) == ExitCode.VALIDATION
+    assert "no line in ami.txt has a speaker label" in capsys.readouterr().err
+    assert cli.main([*cli_args(original), "--allow-unattributed"]) == 0

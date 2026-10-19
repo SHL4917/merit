@@ -149,3 +149,25 @@ def test_cli_doctor_finds_the_repo_from_a_subdirectory(repo, monkeypatch):
 def test_cli_doctor_outside_any_repo_is_an_environment_error(tmp_path, capsys):
     assert cli.main(["doctor", str(tmp_path)]) == 4
     assert "merit.toml" in capsys.readouterr().err
+
+
+# ---------------------------------------- git identity (POC friction fix 15)
+
+def isolate_git_identity(monkeypatch, tmp_path):
+    empty = tmp_path / "empty-gitconfig"
+    empty.write_text("", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    for name in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_missing_git_identity_is_a_warning_with_the_config_fix(repo, monkeypatch, tmp_path):
+    isolate_git_identity(monkeypatch, tmp_path)
+    found = [f for f in warnings(doctor(repo)) if "merit save cannot commit" in f]
+    assert len(found) == 1 and "user.name and user.email" in found[0]
+    assert 'git config user.name "Your Name"' in found[0]
+    assert errors(doctor(repo)) == []
+    git(repo, "config", "user.name", "Test")
+    git(repo, "config", "user.email", "test@example.invalid")
+    assert not any("merit save cannot commit" in f for f in doctor(repo))

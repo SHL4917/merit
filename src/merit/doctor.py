@@ -93,6 +93,20 @@ def _tracked_proposals(repo_root: Path) -> list[str]:
     return [name for name in listed.stdout.decode("utf-8").split("\0") if name]
 
 
+def _identity_findings(repo_root: Path) -> list[str]:
+    """`merit save` commits, and git refuses to commit without a name and email."""
+    from merit.git_ops import IDENTITY_FIX
+    missing = []
+    for key in ("user.name", "user.email"):
+        result = subprocess.run(["git", "config", "--get", key], cwd=repo_root,
+                                capture_output=True, check=False)
+        if result.returncode or not result.stdout.strip():
+            missing.append(key)
+    if not missing:
+        return []
+    return [f"{WARNING}git {' and '.join(missing)} not set, so merit save cannot commit. Fix: {IDENTITY_FIX}"]
+
+
 def doctor(repo_root: Path, *, workflow_repo: str | None = None) -> list[str]:
     repo_root = Path(repo_root)
     findings: list[str] = []
@@ -131,6 +145,7 @@ def doctor(repo_root: Path, *, workflow_repo: str | None = None) -> list[str]:
                         f"that may quote sensitive material. "
                         f"Fix: git rm --cached {subprocess.list2cmdline([name])}"
                     )
+                findings.extend(_identity_findings(repo_root))
                 findings.extend(baseline_tag_findings(repo_root))
     from merit.git_ops import detect_tier
     tier = detect_tier(repo_root, workflow_repo)
