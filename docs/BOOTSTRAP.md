@@ -1,6 +1,6 @@
 # Bootstrap: install MERIT and run a project repo
 
-Every command below was executed and verified against `v0.1.1`. Commands are written
+Every command below was executed and verified against `v0.1.3`. Commands are written
 for Windows PowerShell; on Windows PowerShell 5.1 `curl` is an alias for
 `Invoke-WebRequest`, so call `curl.exe` by filename if you need real curl.
 
@@ -18,7 +18,7 @@ version that validated your baseline is identifiable later.
 
 ```powershell
 py -3.12 -m venv "$HOME\merit-venv"
-& "$HOME\merit-venv\Scripts\python.exe" -m pip install "git+https://github.com/SHL4917/merit@v0.1.1"
+& "$HOME\merit-venv\Scripts\python.exe" -m pip install "git+https://github.com/SHL4917/merit@v0.1.3"
 ```
 
 Check it:
@@ -31,11 +31,16 @@ To type `merit` anywhere instead of the full path, use pipx:
 
 ```powershell
 py -3.12 -m pip install --user pipx
-py -3.12 -m pipx install "git+https://github.com/SHL4917/merit@v0.1.1"
+py -3.12 -m pipx install "git+https://github.com/SHL4917/merit@v0.1.3"
 py -3.12 -m pipx ensurepath
 ```
 
 The rest of this guide writes `merit`. Substitute the full path if you skipped pipx.
+
+To upgrade a project scaffolded by an earlier version, install the new tag the same
+way, then set `[tool] merit_version` in that project's `merit.toml` to the installed
+version, run `merit validate`, and commit `merit.toml`. Until then `merit doctor`
+reports the pin mismatch and names both choices.
 
 ---
 

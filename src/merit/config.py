@@ -83,7 +83,11 @@ def load_config(repo_root: Path) -> Config:
             f"{CONFIG_NAME} pins merit {merit_version} but "
             f"{merit.__version__} is installed; validation would run under "
             "different rules.",
-            fix=f"pipx install git+https://github.com/<org>/merit@v{merit_version}",
+            fix=(
+                f'reinstall the pinned version: pipx install "git+{merit.SOURCE_URL}@v{merit_version}"; '
+                f'or adopt the installed one: set [tool] merit_version = "{merit.__version__}" in '
+                f"{CONFIG_NAME}, run merit validate, and commit {CONFIG_NAME}"
+            ),
         )
 
     allowed = required("classification", "allowed", list, "a list of strings")

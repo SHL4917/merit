@@ -437,3 +437,19 @@ def test_a_ref_of_the_wrong_kind_fails_the_schema(project):
                     dict(op="add_acceptance_criterion", id="@idea", criterion="x"))
     with pytest.raises(UsageError, match="operation index 1"):
         apply_proposal(root, path)
+
+
+def test_the_clarify_playbook_requires_the_persons_own_words(capsys):
+    # Second-trial fix: the agent wrote the answer note itself under an invented label.
+    assert main(["prompt", "clarify"]) == 0
+    text = " ".join(capsys.readouterr().out.split())
+    assert "the person's own words, verbatim" in text
+    assert "real name (`Name: their words`)" in text and "`--authored-by`" in text
+
+
+def test_the_review_playbook_forbids_padding_issue_evidence(capsys):
+    # Second-trial fix: an unrelated quote was added only to satisfy V7.
+    assert main(["prompt", "review"]) == 0
+    text = " ".join(capsys.readouterr().out.split())
+    assert "at least two evidence entries (rule V7)" in text
+    assert "never pad it with an unrelated quote" in text and "merit apply --check" in text

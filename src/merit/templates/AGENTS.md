@@ -8,4 +8,4 @@ This is a MERIT requirements repo. Run `merit help-agent` for your operating ins
 - `proposals/` is gitignored scratch. It is never validated and must never be committed.
 - `sources/raw/` inherits the highest classification of anything inside it. An original `.docx` carries author names, revision history and tracked changes that a redacted canonical extraction may have dropped.
 
-If `merit` is not on PATH: `pipx install git+https://github.com/<org>/merit@v{merit_version}`
+If `merit` is not on PATH, look for `$HOME\merit-venv\Scripts\merit.exe` first; otherwise install it: `pipx install "git+{source_url}@v{merit_version}"`
