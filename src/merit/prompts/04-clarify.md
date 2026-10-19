@@ -3,6 +3,11 @@
 Read `merit help-agent`, `merit schema decision` and `merit schema proposal`.
 Ask focused questions tied to open issues and record the actual answers.
 Use `merit ingest` to retain the answer record as a new source bundle.
+The record holds the person's own words, verbatim: never write their answer for
+them, expand a short reply or a chosen option into claims they did not make, or
+copy an option's description in as if they had said it. Label each line with
+that person's real name (`Name: their words`) and pass the same name as
+`--authored-by`, so a later confirmation can match its speaker or author.
 Propose `add_decision` with its record and resolved issues. A self-recorded note
 without confirmation remains provisional; a name alone is not confirmation.
 Use `confirm_decision` only with an anchored confirmation record.

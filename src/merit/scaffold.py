@@ -134,6 +134,7 @@ def init(target: Path, *, project_id: str, id_prefix: str) -> None:
         "project_id": project_id,
         "id_prefix": id_prefix,
         "merit_version": merit.__version__,
+        "source_url": merit.SOURCE_URL,
     }
     for name in DOCUMENTS:
         _write(target / name, _template(name, **fields))

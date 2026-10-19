@@ -41,7 +41,7 @@ def write_toml(root, body, version=None):
 
 
 def test_version_is_a_plain_string():
-    assert merit.__version__ == "0.1.2"
+    assert merit.__version__ == "0.1.3"
 
 
 def test_values_load_from_merit_toml(tmp_path):
@@ -76,7 +76,7 @@ def test_pin_mismatch_names_both_versions(tmp_path):
     assert exc.value.exit_code == ExitCode.ENVIRONMENT
     assert "9.9.9" in message
     assert merit.__version__ in message
-    assert "pipx install git+" in exc.value.fix
+    assert 'pipx install "git+' in exc.value.fix
     assert "@v9.9.9" in exc.value.fix
     assert "pip install merit==" not in exc.value.fix
 
@@ -193,7 +193,7 @@ def test_pin_is_compared_before_other_keys_are_validated(tmp_path):
         load_config(tmp_path)
     assert "9.9.9" in str(exc.value)
     assert merit.__version__ in str(exc.value)
-    assert "pipx install git+" in exc.value.fix
+    assert 'pipx install "git+' in exc.value.fix
 
 
 def test_missing_pin_is_a_missing_key_error(tmp_path):

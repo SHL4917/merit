@@ -49,7 +49,8 @@ def test_agents_md_carries_the_bootstrap_rules(repo):
     assert "merit apply" in text
     for directory in GOVERNED:
         assert f"`{directory}/`" in text
-    assert f"pipx install git+https://github.com/<org>/merit@v{merit.__version__}" in text
+    assert f'pipx install "git+{merit.SOURCE_URL}@v{merit.__version__}"' in text
+    assert "<org>" not in text and r"$HOME\merit-venv\Scripts\merit.exe" in text
     assert "highest classification" in text
 
 

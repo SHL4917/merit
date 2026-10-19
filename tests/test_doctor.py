@@ -71,7 +71,9 @@ def test_pin_mismatch_is_an_error_naming_both_versions_and_the_fix(repo):
     mismatch = [f for f in errors(doctor(repo)) if "9.9.9" in f]
     assert len(mismatch) == 1
     assert merit.__version__ in mismatch[0]
-    assert "pipx install git+https://github.com/<org>/merit@v9.9.9" in mismatch[0]
+    assert f'pipx install "git+{merit.SOURCE_URL}@v9.9.9"' in mismatch[0]
+    assert f'set [tool] merit_version = "{merit.__version__}"' in mismatch[0]
+    assert "<org>" not in mismatch[0]
 
 
 def test_missing_gh_is_a_warning(repo, monkeypatch):
