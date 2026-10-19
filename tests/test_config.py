@@ -41,7 +41,7 @@ def write_toml(root, body, version=None):
 
 
 def test_version_is_a_plain_string():
-    assert merit.__version__ == "0.1.3"
+    assert merit.__version__ == "0.1.4"
 
 
 def test_values_load_from_merit_toml(tmp_path):
@@ -202,3 +202,21 @@ def test_missing_pin_is_a_missing_key_error(tmp_path):
         load_config(tmp_path)
     assert "merit_version" in str(exc.value)
     assert exc.value.fix
+
+
+def test_a_leading_utf8_bom_is_tolerated(tmp_path):
+    # Windows PowerShell 5.1 `Set-Content -Encoding utf8` writes a BOM; the
+    # BOOTSTRAP upgrade step has users edit merit.toml by hand.
+    write_toml(tmp_path, FULL_TOML)
+    plain = load_config(tmp_path)
+    path = tmp_path / "merit.toml"
+    path.write_bytes(b"\xef\xbb\xbf" + path.read_bytes())
+    assert load_config(tmp_path) == plain
+
+
+def test_only_one_leading_bom_is_dropped(tmp_path):
+    write_toml(tmp_path, FULL_TOML)
+    path = tmp_path / "merit.toml"
+    path.write_bytes(b"\xef\xbb\xbf" * 2 + path.read_bytes())
+    with pytest.raises(EnvironmentError_, match="not valid TOML"):
+        load_config(tmp_path)

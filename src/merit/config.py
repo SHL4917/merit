@@ -45,7 +45,9 @@ def load_config(repo_root: Path) -> Config:
             fix="merit init --project-id <project-id> --id-prefix <ID-PREFIX>",
         )
     try:
-        data = tomllib.loads(path.read_text(encoding="utf-8"))
+        # Windows PowerShell 5.1 (`Set-Content -Encoding utf8`) prepends a BOM,
+        # which TOML rejects; drop exactly one so a hand-edited pin still loads.
+        data = tomllib.loads(path.read_text(encoding="utf-8").removeprefix(chr(0xFEFF)))
     except tomllib.TOMLDecodeError as exc:
         raise EnvironmentError_(
             f"{path} is not valid TOML: {exc}",
