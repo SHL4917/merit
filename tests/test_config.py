@@ -41,7 +41,7 @@ def write_toml(root, body, version=None):
 
 
 def test_version_is_a_plain_string():
-    assert merit.__version__ == "0.1.1"
+    assert merit.__version__ == "0.1.2"
 
 
 def test_values_load_from_merit_toml(tmp_path):
